@@ -5,10 +5,7 @@ import logging
 import time
 import traceback
 import uuid
-<<<<<<< HEAD
-=======
 import warnings
->>>>>>> tde/further_flask_fixes
 
 from megatron.core.inference.sampling_params import SamplingParams
 from megatron.core.tokenizers.text.parsers import PARSER_MAPPING
