@@ -10,6 +10,7 @@ try:
     from flask import Flask
     from hypercorn.asyncio import serve
     from hypercorn.config import Config
+    from hypercorn.middleware import AsyncioWSGIMiddleware
 
     HAS_FLASK = True
 except ImportError as e:
@@ -36,7 +37,11 @@ def temp_log_level(level, logger=None):
 
 @trace_async_exceptions
 async def run_flask_server_on_client(
-    client: InferenceClient, tokenizer, flask_port: int, parsers: list[str] = None
+    client: InferenceClient,
+    tokenizer,
+    flask_port: int,
+    parsers: list[str] = None,
+    verbose: bool = False,
 ):
     """Initializes and runs the async Flask server using the provided InferenceClient."""
     if not HAS_FLASK:
@@ -54,6 +59,7 @@ async def run_flask_server_on_client(
     app.config['client'] = client
     app.config['tokenizer'] = tokenizer
     app.config['parsers'] = parsers
+    app.config['verbose'] = verbose
 
     # Register all blueprints from the 'endpoints' package
     for endpoint in endpoints.__all__:
@@ -64,11 +70,13 @@ async def run_flask_server_on_client(
         return "Megatron Dynamic Inference Server is running."
 
     loop = asyncio.get_event_loop()
-    loop.set_default_executor(ThreadPoolExecutor(max_workers=8192))
 
     config = Config()
+    config.keep_alive_timeout = 30.0
+    config.wsgi_max_body_size = 2**30  # 1 GB
     config.bind = [f"0.0.0.0:{flask_port}"]
     config.backlog = 8192
+    config.keep_alive_timeout = 30.0
 
     # Force logging level to INFO to ensure that hostname is printed
     with temp_log_level(logging.INFO, logger):
@@ -76,12 +84,18 @@ async def run_flask_server_on_client(
         logger.info(f"Using tokenizer: {type(tokenizer)}")
         logger.info(f"Using parsers: {parsers}")
 
-    await serve(app, config)
+    loop.set_default_executor(ThreadPoolExecutor(max_workers=8192))
+    await serve(AsyncioWSGIMiddleware(app), config)
 
 
 @trace_async_exceptions
 async def run_flask_server(
-    coordinator_addr: str, tokenizer, rank: int, flask_port: int, parsers: list[str] = None
+    coordinator_addr: str,
+    tokenizer,
+    rank: int,
+    flask_port: int,
+    parsers: list[str] = None,
+    verbose: bool = False,
 ):
     """Initializes and runs the async Flask server
     starting an InferenceClient with the provided coordinator address."""
@@ -89,7 +103,7 @@ async def run_flask_server(
     await inference_client.start()
     logger.info(f"Rank {rank}: InferenceClient connected.")
     try:
-        await run_flask_server_on_client(inference_client, tokenizer, flask_port, parsers)
+        await run_flask_server_on_client(inference_client, tokenizer, flask_port, parsers, verbose)
     finally:
         await inference_client.stop()
         logger.info(f"Rank {rank}: Flask server and client shut down.")

@@ -5,6 +5,10 @@ import logging
 import time
 import traceback
 import uuid
+<<<<<<< HEAD
+=======
+import warnings
+>>>>>>> tde/further_flask_fixes
 
 from megatron.core.inference.sampling_params import SamplingParams
 from megatron.core.tokenizers.text.parsers import PARSER_MAPPING
@@ -38,7 +42,7 @@ try:
                 messages, tokenize=True, add_generation_prompt=True, tools=req.get("tools", None)
             )
         except (AttributeError, AssertionError):
-            logger.warning(
+            warnings.warn(
                 "Tokenizer does not support 'apply_chat_template'. Using tokenize instead."
             )
             prompt_tokens = tokenizer.tokenize(
@@ -97,17 +101,20 @@ try:
         for _ in range(n):
             tasks.append(client.add_request(prompt_tokens, sampling_params))
 
-        start_time = time.perf_counter()
+        if current_app.config['verbose']:
+            start_time = time.perf_counter()
+
         try:
             batch_results = await asyncio.gather(*tasks)
         except Exception as e:
             logger.error(f"Error during inference: {e}")
             return f"Error during inference: {e}", 500
 
-        logger.info(
-            f"Batch of {len(tasks)} requests (n={n}) processed in "
-            f"{time.perf_counter() - start_time:.2f}s"
-        )
+        if current_app.config['verbose']:
+            logging.info(
+                f"Batch of {len(tasks)} requests (n={n}) processed in "
+                f"{time.perf_counter() - start_time:.2f}s"
+            )
 
         # --- 4. Format OpenAI Response ---
         choices = []
@@ -116,7 +123,6 @@ try:
 
         request_idx = 0
         for record in batch_results:
-            assert len(record.requests) == 1, "Each record should contain one request result."
             result = record.merge().serialize()
             # Unwrap ("tensor", [...]) tuples from serialize() into plain lists.
             result = {
@@ -181,7 +187,7 @@ try:
             # Replicate data in the message field for compatibility.
             message["prompt_token_ids"] = result["prompt_tokens"]
             message["generation_token_ids"] = result["generated_tokens"]
-            messge["generation_log_probs"] = result.get("generated_log_probs", None)
+            message["generation_log_probs"] = result.get("generated_log_probs", None)
             return_log_probs = sampling_params.return_log_probs
 
             choice_data = {
@@ -198,7 +204,8 @@ try:
                     "tool_calls" if metadata.get("tool_calls", []) else "stop"
                 ),  # Original code hardcoded this.
             }
-            logging.info(result)
+            if current_app.config['verbose']:
+                logging.info(result)
             if result["routing_indices"] is not None:
                 choice_data["moe_topk_indices"] = result["routing_indices"]
                 if prompt_tokens_count:
