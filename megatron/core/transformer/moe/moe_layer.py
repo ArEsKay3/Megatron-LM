@@ -197,7 +197,13 @@ class MoELayer(BaseMoELayer):
         # Initialize latent projections.
         if self.config.moe_latent_size:
             assert HAVE_TE, "TransformerEngine is required for MoE latent projections."
-            self.fc1_latent_proj = TELinear(
+            if config.transformer_impl == "inference_optimized":
+                from megatron.core.tensor_parallel.inference_layers import InferenceTELinear
+
+                latent_linear_cls = InferenceTELinear
+            else:
+                latent_linear_cls = TELinear
+            self.fc1_latent_proj = latent_linear_cls(
                 self.config.hidden_size,
                 self.config.moe_latent_size,
                 parallel_mode="duplicated",
@@ -208,7 +214,7 @@ class MoELayer(BaseMoELayer):
                 skip_weight_param_allocation=False,
                 is_expert=False,
             )
-            self.fc2_latent_proj = TELinear(
+            self.fc2_latent_proj = latent_linear_cls(
                 self.config.moe_latent_size,
                 self.config.hidden_size,
                 parallel_mode="duplicated",

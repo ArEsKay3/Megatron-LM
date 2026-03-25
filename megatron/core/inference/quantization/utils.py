@@ -102,11 +102,7 @@ def _should_quantize_param(val: torch.Tensor) -> bool:
         return True
     if HAVE_TE and hasattr(val, 'data') and isinstance(val.data, TEMXFP8Tensor):
         return True
-    if (
-        isinstance(val, torch.nn.Parameter)
-        and val.dim() == 2
-        and val.dtype in (torch.bfloat16, torch.float16)
-    ):
+    if isinstance(val, MXFP8Tensor):
         return True
     return False
 
@@ -244,6 +240,7 @@ def mm_mxfp8(x: torch.Tensor, weight: MXFP8Tensor, out: torch.Tensor = None):
     Quantizes the bf16 input activation tensor on the fly. Weight must be
     pre-quantized. Dispatches to FlashInfer or torch based on weight.backend.
     """
+
     backend = weight.backend
     assert (
         backend is not None

@@ -474,7 +474,7 @@ try:
                 1 for e in result["events"] if e.get("type") == "EVICT"
             )
             if current_app.config['verbose']:
-                logging.info(result)
+                logging.info(f"Finished request {request_idx}")
 
             if result["routing_indices"] is not None:
                 choice_data["moe_topk_indices"] = result["routing_indices"]

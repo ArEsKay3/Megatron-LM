@@ -5,6 +5,7 @@ from .inference_layers import (
     InferenceColumnParallelLinear,
     InferenceLayerNormColumnParallelLinear,
     InferenceRowParallelLinear,
+    InferenceTELinear,
 )
 from .layers import (
     ColumnParallelLinear,
