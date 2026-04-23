@@ -137,19 +137,24 @@ class MegatronOptimizer(ABC):
                     params.append(param)
         return params
 
-    def get_main_grads_for_grad_norm(self) -> List[torch.Tensor]:
-        
-        """Collects gradients for norm calculation, filtering duplicates.
+    def _filter_grads_for_norm(
+        self,
+        params: List[torch.nn.Parameter],
+        param_filter: Optional[Callable[[torch.nn.Parameter], bool]] = None,
+    ) -> List[torch.Tensor]:
+        """Filter parameter gradients for norm computation.
 
-        This method filters parameters based on whether the gradient is not None, 
-        the parameter is not shared (to avoid double-counting gradients), and 
-        the parameter is not a replica due to tensor model parallelism.
-
-        Returns:
-            List[torch.Tensor]: A list of gradient tensors filtered for norm calculation.
+        Filter parameters based on:
+          - param_filter predicate, when provided.
+          - grad should not be None.
+          - parameter should not be shared (i.e., grads shouldn't be double counted while
+            computing norms).
+          - should not be a replica due to tensor model parallelism.
         """
         grads_for_norm = []
         for param in params:
+            if param_filter is not None and not param_filter(param):
+                continue
             if self.config.use_precision_aware_optimizer_no_fp8_or_ds_fp8:
                 grad = param.decoupled_grad if hasattr(param, "decoupled_grad") else None
                 if (
