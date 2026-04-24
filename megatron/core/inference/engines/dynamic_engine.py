@@ -267,7 +267,8 @@ class DynamicInferenceEngine(AbstractEngine):
                     self.inference_step_offset = int(max_step)
 
         # Create cuda graphs.
-        self.create_cuda_graphs()
+        with torch.inference_mode():
+            self.create_cuda_graphs()
 
         # Measure HBM bandwidth and model weight memory for SOL latency reporting.
         self._model_weight_bytes = get_model_weight_bytes(
