@@ -1208,11 +1208,13 @@ class DynamicInferenceEngine(AbstractEngine):
                         )
                     # TPOT is observability-only. step_time is 0.0 on
                     # non-logging steps (async_forward skips the event sync),
-                    # so gate the update to keep the metric a truthful sparse
-                    # sample instead of polluting it with zeros.
+                    # so gate the *extend* to keep the metric a truthful sparse
+                    # sample instead of polluting it with zeros. Always init the
+                    # list so merge_lists doesn't trip on a None tpot for records
+                    # that only saw non-logging steps.
+                    if request.tpot is None:
+                        request.tpot = []
                     if step_time > 0:
-                        if request.tpot is None:
-                            request.tpot = []
                         per_token_step_time = step_time / len(tokens)
                         request.tpot.extend([per_token_step_time] * len(tokens))
 

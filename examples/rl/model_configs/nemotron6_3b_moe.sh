@@ -59,7 +59,7 @@ MODEL_OPTIONS="\
   --rl-skip-bos-token \
   --no-rl-use-sequence-packing \
   --rl-partial-rollouts \
-  --moe-pad-experts-for-cuda-graph-inference \
+  ${MOE_PAD_EXPERTS_FLAG:---moe-pad-experts-for-cuda-graph-inference} \
   --inference-dynamic-batching-max-tokens 8192 \
   --inference-dynamic-batching-max-requests 128 \
   --inference-dynamic-batching-num-cuda-graphs 2 \
@@ -111,7 +111,7 @@ MODEL_OPTIONS="\
   --ckpt-fully-parallel-load \
   --use-distributed-optimizer \
   --overlap-grad-reduce \
-  --overlap-param-gather \
+  ${OVERLAP_PARAM_GATHER_FLAG:---overlap-param-gather} \
   --no-create-attention-mask-in-dataloader \
   --lr 3e-6 \
   --min-lr 3e-6 \
