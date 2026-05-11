@@ -589,6 +589,17 @@ try:
             original_log_probs  = list(orig.get("log_probs", []))
             original_top_n      = list(orig.get("generated_top_n_logprobs") or [])
 
+            # TEMP debug: where does the EOD come from on the original generation?
+            eod_token = getattr(tokenizer, "eod", None)
+            logger.info(
+                f"[branch debug] step 1 ORIGINAL: len(gen)={len(original_generated)} "
+                f"last_tok={original_generated[-1] if original_generated else None} "
+                f"eod={eod_token} "
+                f"ends_with_eod={(original_generated[-1] == eod_token) if original_generated else False} "
+                f"max_tokens={max_tokens} "
+                f"status={orig.get('status')}"
+            )
+
             # Step 2: spawn continuations at each branch point, all in parallel.
             # Engine uses extended prompt for correct KV context; results are fixed
             # up in Step 3 so all choices share the original prompt_tokens and
@@ -627,6 +638,11 @@ try:
             except Exception as e:
                 logger.error(f"Error during branching inference: {e}")
                 return Response(f"Error during inference: {e}", status=500)
+            # TEMP debug: confirm we waited for ALL forks before continuing.
+            logger.info(
+                f"[branch debug] step 2 GATHER complete: "
+                f"submitted={len(branch_tasks)} returned={len(branch_raws)}"
+            )
 
             # Step 3: fix up continuation results so all choices share the original
             # prompt and continuations present pre-fork tokens as generated tokens.
@@ -638,6 +654,17 @@ try:
                 pre_fork_lps    = original_log_probs[:branch_point]
                 pre_fork_top_n  = original_top_n[:branch_point]
 
+                # TEMP debug: per-branch raw continuation stats BEFORE fixup.
+                cont_gen_raw = list(r.get("generated_tokens", []))
+                logger.info(
+                    f"[branch debug] step 3 BRANCH(point={branch_point}): "
+                    f"len(cont_gen_raw)={len(cont_gen_raw)} "
+                    f"last_cont_tok={cont_gen_raw[-1] if cont_gen_raw else None} "
+                    f"cont_ends_with_eod={(cont_gen_raw[-1] == eod_token) if cont_gen_raw else False} "
+                    f"remaining_budget={int(max_tokens) - branch_point if max_tokens is not None else None} "
+                    f"status={r.get('status')}"
+                )
+
                 r["prompt_tokens"]       = list(prompt_tokens)
                 r["generated_tokens"]    = pre_fork_tokens + list(r.get("generated_tokens", []))
                 r["log_probs"]           = pre_fork_lps + list(r.get("log_probs", []))
@@ -645,6 +672,13 @@ try:
                 if r.get("generated_top_n_logprobs") is not None or pre_fork_top_n:
                     r["generated_top_n_logprobs"] = pre_fork_top_n + list(r.get("generated_top_n_logprobs") or [])
                 fixed_branch_results.append(r)
+                # TEMP debug: per-branch stats AFTER fixup.
+                logger.info(
+                    f"[branch debug] step 3 BRANCH(point={branch_point}) AFTER fixup: "
+                    f"len(gen)={len(r['generated_tokens'])} "
+                    f"last_tok={r['generated_tokens'][-1] if r['generated_tokens'] else None} "
+                    f"ends_with_eod={(r['generated_tokens'][-1] == eod_token) if r['generated_tokens'] else False}"
+                )
 
             if fixed_branch_results:
                 warnings.warn(

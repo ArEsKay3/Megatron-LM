@@ -1116,6 +1116,11 @@ def maybe_log_training_metrics(
         gs_std = float(np.std(group_sizes))
         gs_min = int(np.min(group_sizes))
         gs_max = int(np.max(group_sizes))
+        logger.info(
+            f"[iter {current_iteration}] group_size n={len(group_sizes)} "
+            f"mean={gs_mean:.2f} std={gs_std:.2f} min={gs_min} max={gs_max} "
+            f"sizes={group_sizes}"
+        )
     else:
         gs_mean = gs_std = 0.0
         gs_min = gs_max = 0
