@@ -3037,12 +3037,14 @@ def train(
         # to make sure training configuration is still valid.
         # Standard microbatch update (sequence packing overrides this in rl_utils.py)
         update_num_microbatches(args.consumed_train_samples, consistency_check=False, verbose=True)
-        # Skip automatic checkpoint on microbatch changes when sequence packing is active
-        # as it intentionally reconfigures microbatches
+        # Skip automatic checkpoint on microbatch changes when sequence packing or
+        # GRPO branching sampling is active, since both intentionally reconfigure
+        # microbatches every iteration based on data, which would otherwise trigger
+        # a save every step.
         if get_num_microbatches() != num_microbatches and iteration != 0:
-            if args.rl_use_sequence_packing:
+            if args.rl_use_sequence_packing or (args.grpo_branch_factor and args.grpo_branch_frequency):
                 print_rank_0(
-                    f"[Sequence Packing] Skipping automatic checkpoint at iteration {iteration} "
+                    f"[RL reconfigure] Skipping automatic checkpoint at iteration {iteration} "
                     f"(microbatch change: {num_microbatches} -> {get_num_microbatches()})"
                 )
             else:

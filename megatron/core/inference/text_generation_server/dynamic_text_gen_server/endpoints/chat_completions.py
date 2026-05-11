@@ -562,24 +562,113 @@ try:
                 skip_prompt_log_probs=skip_prompt_log_probs,
                 add_BOS=add_BOS,
             )
+
+            branch_frequency = req.get("branch_frequency", None)
+            branch_factor = req.get("branch_factor", None)
+            if branch_frequency is not None:
+                branch_frequency = int(branch_frequency)
+            if branch_factor is not None:
+                branch_factor = int(branch_factor)
         except ValueError as e:
             return Response(f"Invalid sampling parameter: {e}", status=400)
 
         # --- 3. Send Requests to Engine ---
-        tasks = [client.add_request(prompt_tokens, sampling_params) for _ in range(n)]
+        if branch_frequency and branch_factor:
+            # Phase 1 branching: run original to completion, then fork continuations.
 
-        if current_app.config['verbose']:
-            start_time = time.perf_counter()
+            # Step 1: original generation.
+            try:
+                original_raw = await client.add_request(prompt_tokens, sampling_params)
+            except Exception as e:
+                logger.error(f"Error during inference: {e}")
+                return Response(f"Error during inference: {e}", status=500)
 
-        try:
-            batch_results = await asyncio.gather(*tasks)
-        except Exception as e:
-            logger.error(f"Error during inference: {e}")
-            return Response(f"Error during inference: {e}", status=500)
+            orig = original_raw if isinstance(original_raw, dict) else original_raw.serialize()
+            orig = unwrap_serialized_tensors(orig)
+            original_generated = list(orig.get("generated_tokens", []))
+            original_log_probs  = list(orig.get("log_probs", []))
+            original_top_n      = list(orig.get("generated_top_n_logprobs") or [])
+
+            # Step 2: spawn continuations at each branch point, all in parallel.
+            # Engine uses extended prompt for correct KV context; results are fixed
+            # up in Step 3 so all choices share the original prompt_tokens and
+            # continuations include pre-fork tokens as part of their generation.
+            branch_tasks = []
+            branch_points = []
+            for branch_point in range(branch_frequency, len(original_generated), branch_frequency):
+                continuation_prompt = list(prompt_tokens) + original_generated[:branch_point]
+                if max_tokens is not None:
+                    # Mirror the original's max_tokens budget so total branch generation
+                    # length (pre_fork + cont) <= max_tokens.
+                    cont_num_tokens = max(1, int(max_tokens) - branch_point)
+                else:
+                    # Let the engine apply its default budget (max_sequence_length -
+                    # len(continuation_prompt)). The previous fallback capped at
+                    # len(original_generated) - branch_point, which forced continuations
+                    # to run out of budget before sampling EOD and produced trajectories
+                    # that were neither full-length nor EOD-terminated.
+                    cont_num_tokens = None
+                cont_params = SamplingParams(
+                    temperature=temperature,
+                    top_k=top_k,
+                    top_p=top_p,
+                    return_log_probs=return_log_probs,
+                    top_n_logprobs=top_n_logprobs,
+                    num_tokens_to_generate=cont_num_tokens,
+                    skip_prompt_log_probs=skip_prompt_log_probs,
+                    add_BOS=False,
+                )
+                for _ in range(branch_factor):
+                    branch_tasks.append(client.add_request(continuation_prompt, cont_params))
+                    branch_points.append(branch_point)
+
+            try:
+                branch_raws = list(await asyncio.gather(*branch_tasks))
+            except Exception as e:
+                logger.error(f"Error during branching inference: {e}")
+                return Response(f"Error during inference: {e}", status=500)
+
+            # Step 3: fix up continuation results so all choices share the original
+            # prompt and continuations present pre-fork tokens as generated tokens.
+            fixed_branch_results = []
+            for branch_point, raw in zip(branch_points, branch_raws):
+                r = raw if isinstance(raw, dict) else raw.serialize()
+                r = dict(unwrap_serialized_tensors(r))
+                pre_fork_tokens = original_generated[:branch_point]
+                pre_fork_lps    = original_log_probs[:branch_point]
+                pre_fork_top_n  = original_top_n[:branch_point]
+
+                r["prompt_tokens"]       = list(prompt_tokens)
+                r["generated_tokens"]    = pre_fork_tokens + list(r.get("generated_tokens", []))
+                r["log_probs"]           = pre_fork_lps + list(r.get("log_probs", []))
+                r["generated_log_probs"] = pre_fork_lps + list(r.get("generated_log_probs", []))
+                if r.get("generated_top_n_logprobs") is not None or pre_fork_top_n:
+                    r["generated_top_n_logprobs"] = pre_fork_top_n + list(r.get("generated_top_n_logprobs") or [])
+                fixed_branch_results.append(r)
+
+            if fixed_branch_results:
+                warnings.warn(
+                    "Branching enabled: each branch's policy_epoch / kv_cache_epoch / "
+                    "num_evictions reflect only the post-fork (continuation) phase, "
+                    "not the pre-fork tokens. Branched output metadata is incomplete."
+                )
+
+            batch_results = [original_raw] + fixed_branch_results
+        else:
+            tasks = [client.add_request(prompt_tokens, sampling_params) for _ in range(n)]
+
+            if current_app.config['verbose']:
+                start_time = time.perf_counter()
+
+            try:
+                batch_results = await asyncio.gather(*tasks)
+            except Exception as e:
+                logger.error(f"Error during inference: {e}")
+                return Response(f"Error during inference: {e}", status=500)
 
         if current_app.config['verbose']:
             logging.info(
-                f"Batch of {len(tasks)} requests (n={n}) processed in "
+                f"Batch of {len(batch_results)} requests processed in "
                 f"{time.perf_counter() - start_time:.2f}s"
             )
 

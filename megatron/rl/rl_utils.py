@@ -581,6 +581,8 @@ def get_rollout_generator(args, inference_interface, n_prompts, samples_per_grou
                 'max_tokens': args.inference_max_seq_length,
                 'top_p': args.rl_default_top_p,
                 'top_k': args.rl_default_top_k,
+                'branch_frequency': getattr(args, 'grpo_branch_frequency', None),
+                'branch_factor': getattr(args, 'grpo_branch_factor', None),
             },
             filter_groups_with_same_reward=args.grpo_filter_groups_with_same_reward,
             enforce_order=args.rl_enforce_generation_order,
@@ -822,31 +824,26 @@ def get_logprobs(model, tokens, position_ids, no_grad=False, sequence_packing=Fa
             return logprobs
 
 
-def calculate_grpo_advantages(rewards: list[list[float]], num_turns: list[list[int]]) -> np.ndarray:
+def calculate_grpo_advantages(rewards: list[list[float]], num_turns: list[list[int]]) -> list[float]:
     """Calculate GRPO advantages from rewards/num_turns.
 
     For multiturn rollouts, the logic is a bit more involved.
     # For training, we'll be turning each turn into a trajectory with the same reward
     # within a trajectory, e.g. if [[a,b],[c,d,e]] trajectory has reward 1.0, we will
     # get [a,b] with 1.0 and [c,d,e] with 1.0 when doing updates.
+
+    Group sizes may be variable (e.g. when using branching sampling).
+    Each group normalises independently.
     """
-
-    rewards = np.array(rewards)
-
-    num_turns = np.array(num_turns)
-    # Each outer dimension of num_turns is a group. Sum of those gives total num_turns per group.
-    # Let's use this to calculate advantage.
-    # mean/std should be repeated based on group lens
-    group_turns = num_turns.sum(axis=-1)
-    reward_means = rewards.mean(axis=1, keepdims=True).repeat(group_turns)
-    reward_stds = rewards.std(axis=1, keepdims=True).repeat(group_turns)
-
-    # rewards are originally [g, group_size]
-    # Making an assumption that all groups are of the same size!
-    # @vitalyk: this will go away when we start sending env-based sample reqs.
-    rewards = rewards.flatten().repeat(num_turns.flatten())
-
-    return ((rewards - reward_means) / (1e-4 + reward_stds)).tolist()
+    advantages = []
+    for group_rewards, group_num_turns in zip(rewards, num_turns):
+        arr = np.array(group_rewards, dtype=float)
+        mean = arr.mean()
+        std = arr.std()
+        normalized = (arr - mean) / (1e-4 + std)
+        for adv, turns in zip(normalized.tolist(), group_num_turns):
+            advantages.extend([adv] * turns)
+    return advantages
 
 
 def compute_group_stats(
@@ -1112,8 +1109,23 @@ def maybe_log_training_metrics(
 
     wandb_writer = get_wandb_writer()
     tb_writer = get_tensorboard_writer()
+
+    group_sizes = [len(g) for g in group_stats.rewards]
+    if group_sizes:
+        gs_mean = float(np.mean(group_sizes))
+        gs_std = float(np.std(group_sizes))
+        gs_min = int(np.min(group_sizes))
+        gs_max = int(np.max(group_sizes))
+    else:
+        gs_mean = gs_std = 0.0
+        gs_min = gs_max = 0
+
     if tb_writer:
         tb_writer.add_scalar('mean_reward', np.mean([np.mean(g) for g in group_stats.rewards]), current_iteration)
+        tb_writer.add_scalar('rl/group_size_mean', gs_mean, current_iteration)
+        tb_writer.add_scalar('rl/group_size_std', gs_std, current_iteration)
+        tb_writer.add_scalar('rl/group_size_min', gs_min, current_iteration)
+        tb_writer.add_scalar('rl/group_size_max', gs_max, current_iteration)
     if not wandb_writer:
         return
 
@@ -1128,6 +1140,10 @@ def maybe_log_training_metrics(
         'min_inf_prob': group_stats.min_inf_prob,
         'max_inf_prob': group_stats.max_inf_prob,
         'mean_inf_prob': group_stats.mean_inf_prob,
+        'rl/group_size_mean': gs_mean,
+        'rl/group_size_std': gs_std,
+        'rl/group_size_min': gs_min,
+        'rl/group_size_max': gs_max,
     }
 
     traj_lens = group_stats.traj_lens
@@ -1782,11 +1798,18 @@ def evaluate_and_print_results_rl(
                     num_prompts=args.rl_prompts_per_eval,
                     validation=True,
                     rank_info=None,
+                    # Branching parameters (branch_frequency / branch_factor) are
+                    # explicitly NOT propagated into evaluation. Eval semantics
+                    # are one rollout per prompt; branched fan-out would change
+                    # the metric. Adapters (e.g. nemo_gym_agent._evaluation)
+                    # assert these are absent.
                     generation_args={
                         'temperature': args.rl_default_temperature,
                         'max_tokens': args.seq_length,
                         'top_p': args.rl_default_top_p,
                         'top_k': args.rl_default_top_k,
+                        'branch_frequency': None,
+                        'branch_factor': None,
                     },
                 )
                 with get_nvtx_range()("rl/run-evaluation", time=True):

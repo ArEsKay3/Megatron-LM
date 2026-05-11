@@ -65,6 +65,8 @@ class GenericGenerationArgs(BaseModel):
     top_k: int | None = None
     top_p: float | None = None
     max_tokens: int | None = None
+    branch_frequency: int | None = None
+    branch_factor: int | None = None
 
     def add(self, generation_args: 'GenericGenerationArgs') -> 'GenericGenerationArgs':
         return GenericGenerationArgs.model_validate(
