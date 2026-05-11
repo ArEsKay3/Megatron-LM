@@ -233,19 +233,80 @@ class FileSystemWriterAsync(FileSystemWriter):
                 save in a checkpoint.
             non_blocking (bool, optional): knob to enable pinned D2H memcpy. Default is True.
         """
+        # TEMP investigation: instrument host-memory allocation pattern during ckpt save.
+        # Investigating: investigations/checkpoint_save_oom.md
+        try:
+            import os as _os
+            import psutil as _psutil
+            _proc = _psutil.Process(_os.getpid())
+            def _rss_gb():
+                return _proc.memory_info().rss / 1e9
+            def _avail_gb():
+                return _psutil.virtual_memory().available / 1e9
+            _have_psutil = True
+        except Exception:
+            def _rss_gb(): return -1.0
+            def _avail_gb(): return -1.0
+            _have_psutil = False
+
+        try:
+            _rank = torch.distributed.get_rank()
+        except Exception:
+            _rank = -1
+
+        _rss0 = _rss_gb()
+        _avail0 = _avail_gb()
+        _total_tensor_bytes = 0
+        _total_tensor_count = 0
+        for _b in write_buckets:
+            _, _, (_, _td) = _b
+            for _, _t in _td:
+                _total_tensor_count += 1
+                try:
+                    _total_tensor_bytes += _t.numel() * _t.element_size()
+                except Exception:
+                    pass
+        print(
+            f"[preload-debug] rank={_rank} ENTER buckets={len(write_buckets)} "
+            f"tensors={_total_tensor_count} total_bytes={_total_tensor_bytes/1e9:.2f}GB "
+            f"rss={_rss0:.2f}GB host_avail={_avail0:.2f}GB",
+            flush=True,
+        )
+
         result = []
 
-        for bucket in write_buckets:
+        for _b_idx, bucket in enumerate(write_buckets):
             file_name, storage_key, (bytes_data, tensor_data) = bucket
             tensor_list = []
+            _bucket_bytes = 0
             for item, tensor in tensor_data:
+                try:
+                    _bucket_bytes += tensor.numel() * tensor.element_size()
+                except Exception:
+                    pass
                 # we belive these tensors are detached from the model trainers
                 tensor_list.append((item, tensor.to("cpu", non_blocking=non_blocking)))
                 # This is required for `PersistentAsyncCaller` to remove reference
                 del tensor
+            _rss_after = _rss_gb()
+            print(
+                f"[preload-debug] rank={_rank} bucket={_b_idx}/{len(write_buckets)} "
+                f"copied tensors={len(tensor_data)} bucket_bytes={_bucket_bytes/1e9:.2f}GB "
+                f"rss={_rss_after:.2f}GB delta_from_entry={(_rss_after-_rss0):.2f}GB",
+                flush=True,
+            )
             result.append((file_name, storage_key, (bytes_data, tensor_list)))
         if non_blocking:
             torch.cuda.synchronize()
+
+        _rss1 = _rss_gb()
+        _avail1 = _avail_gb()
+        print(
+            f"[preload-debug] rank={_rank} EXIT (after sync) "
+            f"rss={_rss1:.2f}GB delta_from_entry={(_rss1-_rss0):.2f}GB "
+            f"host_avail={_avail1:.2f}GB",
+            flush=True,
+        )
         return result
 
     @staticmethod

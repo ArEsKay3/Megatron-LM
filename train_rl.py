@@ -1,5 +1,15 @@
 # Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
+# NVRX preload_tensors instrumentation: DISABLED 2026-05-04.
+# NVRX 0.6.0 (container arm64-260407) renamed `preload_tensors`'s first arg
+# `write_buckets` -> `resolved_plan_data` and moved bucket creation out of
+# `prepare_write_data` into `preload_tensors` (which now runs in a persistent
+# worker process). Wrapper would still apply but its output would mis-report
+# bucket counts and the worker RSS instead of the rank's. See
+# investigations/checkpoint_save_oom.md "NVRX 0.6.0 signature drift".
+# To re-enable on a matching NVRX version:
+#   import instrumentation.nvrx_preload_patch  # noqa: F401
+
 import inspect
 import os
 from contextlib import nullcontext

@@ -678,13 +678,38 @@ class TorchDistSaveShardedStrategy:
                 )
                 _logged_mcore_async_deprecation = True
 
+        # TEMP investigation: instrument host-memory at each save phase
+        # Investigating: investigations/checkpoint_save_oom.md
+        # OOM happens before preload_tensors so the spike is somewhere upstream.
+        try:
+            import os as _os
+            import psutil as _psutil
+            _proc_savemem = _psutil.Process(_os.getpid())
+            def _savemem(label):
+                try:
+                    rss = _proc_savemem.memory_info().rss / 1e9
+                    avail = _psutil.virtual_memory().available / 1e9
+                except Exception:
+                    rss, avail = -1.0, -1.0
+                try:
+                    rank = torch.distributed.get_rank()
+                except Exception:
+                    rank = -1
+                print(f"[savemem] rank={rank} {label} rss={rss:.2f}GB host_avail={avail:.2f}GB", flush=True)
+        except Exception:
+            def _savemem(label): pass
+
+        _savemem("ENTER async_save")
+
         # Translate the state dict
         (sharded_state_dict, flat_mapping, rename_mapping) = (
             _replace_state_dict_keys_with_sharded_keys(
                 sharded_state_dict, self.keep_only_main_replica
             )
         )
+        _savemem("after _replace_state_dict_keys_with_sharded_keys")
         pyt_state_dict = mcore_to_pyt_state_dict(sharded_state_dict, False)
+        _savemem("after mcore_to_pyt_state_dict")
 
         if self.separation_hint is not None and self.thread_count <= 1:
             self.thread_count = 2
@@ -748,9 +773,11 @@ class TorchDistSaveShardedStrategy:
             use_msc=MultiStorageClientFeature.is_enabled(),
             **async_writer_kwargs,
         )
+        _savemem("after writer init")
 
         # This should be set differently if we run in a smaller process group than the default
         coordinator = 0
+        _savemem("before save_state_dict_async_plan")
         save_state_dict_ret = save_state_dict_async_plan(
             pyt_state_dict,
             writer,
@@ -765,6 +792,7 @@ class TorchDistSaveShardedStrategy:
             ),
             **state_dict_saver_kwargs,
         )
+        _savemem("after save_state_dict_async_plan")
 
         if async_strategy == "mcore":
             # MCore's async implementation

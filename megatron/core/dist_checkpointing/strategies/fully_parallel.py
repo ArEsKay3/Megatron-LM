@@ -87,6 +87,20 @@ class FullyParallelSaveStrategyWrapper:
 
         self.cached_distribution: Optional[ShardDistribution] = None
 
+    def _savemem(self, label):
+        # TEMP investigation: investigations/checkpoint_save_oom.md
+        try:
+            import os as _os, psutil as _psutil
+            rss = _psutil.Process(_os.getpid()).memory_info().rss / 1e9
+            avail = _psutil.virtual_memory().available / 1e9
+            try:
+                rank = torch.distributed.get_rank()
+            except Exception:
+                rank = -1
+            print(f"[savemem] rank={rank} (FullyParallel) {label} rss={rss:.2f}GB host_avail={avail:.2f}GB", flush=True)
+        except Exception:
+            pass
+
     def async_save(
         self,
         sharded_state_dict: ShardedStateDict,
@@ -94,12 +108,16 @@ class FullyParallelSaveStrategyWrapper:
         async_strategy: str = "nvrx",
     ):
         """ """
+        self._savemem("ENTER async_save (wrapper)")
         self.apply_saving_parallelization(sharded_state_dict)
+        self._savemem("after apply_saving_parallelization")
         return self.base_strategy.async_save(sharded_state_dict, checkpoint_dir, async_strategy)
 
     def save(self, sharded_state_dict: ShardedStateDict, checkpoint_dir: Path):
         """ """
+        self._savemem("ENTER save (wrapper)")
         self.apply_saving_parallelization(sharded_state_dict)
+        self._savemem("after apply_saving_parallelization")
         return self.base_strategy.save(sharded_state_dict, checkpoint_dir)
 
     def apply_saving_parallelization(self, sharded_state_dict: ShardedStateDict) -> None:
