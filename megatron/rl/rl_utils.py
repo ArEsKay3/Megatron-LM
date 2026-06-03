@@ -1581,6 +1581,117 @@ def prepare_data_for_update(
                 rollouts, tokenizer, args.seq_length, sequence_packing, args.rl_skip_bos_token
             )
 
+        # DP availability sync for inference logprobs (sequence-packing path).
+        #
+        # pack_all_trajectories() all-gathers inference_logprobs across the DP group, but
+        # only on ranks where inference_logprobs is not None. Whether logprobs are present
+        # is decided per-rank from local rollouts (prepare_trajectories, ~line 1574), so in
+        # multi-env / mixed-engine setups one rank can hold None while another holds a tensor
+        # -> the collective all_gather runs on some ranks and not others -> NCCL deadlock.
+        # Make the decision collective: if ANY rank has logprobs, every rank materializes a
+        # zero [N, seq_length] tensor (matching _pad_nonnull_with_zeros' shape/dtype) so the
+        # gather is uniform. The zero rows belong to rollouts that returned no logprobs; they
+        # are only consumed for logging stats (is-correction is disabled for such rows via the
+        # generation/loss mask) so the zeros never enter the training IS weights.
+        if sequence_packing and mpu.get_data_parallel_world_size() > 1:
+            have_lp = torch.tensor(
+                [1 if inference_logprobs is not None else 0],
+                device='cuda', dtype=torch.long,
+            )
+            torch.distributed.all_reduce(
+                have_lp, op=torch.distributed.ReduceOp.MAX,
+                group=mpu.get_data_parallel_group(),
+            )
+            if have_lp.item() > 0 and inference_logprobs is None:
+                inference_logprobs = torch.zeros(
+                    (trajs.shape[0], args.seq_length), dtype=torch.float, device='cpu',
+                )
+
+        # DP-split divergence fix for multi-turn rollouts.
+        #
+        # The DP split above slices `rollouts` evenly across DP ranks, but multi-turn
+        # rollouts produce 1..max_steps trajectories EACH (one per turn). Per-rank
+        # trajectory counts therefore vary: one rank may get all 1-turn rollouts
+        # (32 trajs), another may get all 6-turn (192 trajs).
+        #
+        # Downstream `compute_logprobs_batch` iterates `len(data_loader)` times —
+        # variable per rank — and each iter calls `forward_backward_no_pipelining`
+        # which fires `Timers.start(barrier=True)` on default_pg. Ranks with fewer
+        # trajectories race ahead to the next barrier while slower ranks are still
+        # in their loop → deadlock at the world-level barrier.
+        #
+        # Pad each rank's trajectories up to the global max across DP ranks so
+        # all ranks loop the same number of times. Padded entries have
+        # generation_mask=False everywhere → zero loss / zero grad contribution.
+        if (data_parallel_world_size := mpu.get_data_parallel_world_size()) > 1:
+            local_count = trajs.shape[0]
+            max_count_t = torch.tensor([local_count], device='cuda', dtype=torch.long)
+            torch.distributed.all_reduce(
+                max_count_t,
+                op=torch.distributed.ReduceOp.MAX,
+                group=mpu.get_data_parallel_group(),
+            )
+            target_count = int(max_count_t.item())
+
+            if target_count > local_count:
+                pad_n = target_count - local_count
+                seq_len = trajs.shape[1]
+                pad_trajs = torch.full(
+                    (pad_n, seq_len), tokenizer.pad,
+                    dtype=trajs.dtype, device=trajs.device,
+                )
+                pad_gen_masks = torch.zeros(
+                    (pad_n, seq_len),
+                    dtype=generation_masks.dtype, device=generation_masks.device,
+                )
+                trajs = torch.cat([trajs, pad_trajs], dim=0)
+                generation_masks = torch.cat([generation_masks, pad_gen_masks], dim=0)
+                # advantages was sliced to local_num_turns above; pad with zeros.
+                pad_adv = torch.zeros(
+                    pad_n, dtype=advantages.dtype, device=advantages.device,
+                )
+                advantages = torch.cat([advantages, pad_adv])
+                # inference_logprobs is None, OR a list of per-traj tensors (no-packing path),
+                # OR a [N, S] padded tensor (sequence-packing path — `_pad_nonnull_with_zeros`
+                # at ~prepare_trajectories line 1376 returns a 2D tensor).
+                if inference_logprobs is not None:
+                    if isinstance(inference_logprobs, torch.Tensor):
+                        # Tensor path: concatenate zero rows of matching shape/dtype/device.
+                        pad_lp = torch.zeros(
+                            (pad_n, *inference_logprobs.shape[1:]),
+                            dtype=inference_logprobs.dtype,
+                            device=inference_logprobs.device,
+                        )
+                        inference_logprobs = torch.cat([inference_logprobs, pad_lp], dim=0)
+                    else:
+                        # List path: append zero tensors matching existing non-None entry shape.
+                        non_none = next(
+                            (lp for lp in inference_logprobs if lp is not None), None
+                        )
+                        if non_none is not None:
+                            dummy_lp = torch.zeros_like(non_none)
+                        else:
+                            dummy_lp = torch.zeros(seq_len - 1, dtype=torch.float)
+                        inference_logprobs.extend(
+                            [dummy_lp.clone() for _ in range(pad_n)]
+                        )
+
+            # Rebuild global_advantages from padded local advantages so that
+            # `pack_all_trajectories` (sequence-packing path) — which all-gathers
+            # local trajs into a global concat — has a global_advantages tensor
+            # that matches the post-gather length. Without this, the dummy
+            # trajectories shift indices and `global_advantages[seq_indices]`
+            # would go out of range.
+            gathered_adv = [
+                torch.empty_like(advantages)
+                for _ in range(data_parallel_world_size)
+            ]
+            torch.distributed.all_gather(
+                gathered_adv, advantages,
+                group=mpu.get_data_parallel_group(),
+            )
+            global_advantages = torch.cat(gathered_adv, dim=0)
+
         packing_context = None
         # Build trajectories based on sequence packing or standard processing
         if sequence_packing:
@@ -1701,6 +1812,9 @@ def prepare_data_for_update(
                         packing_info=packing_context.packing_info,
                         generation_masks=packing_context.original_generation_masks,
                         bin_size=args.seq_length,
+                        old_logprobs=old_logprobs,
+                        trajs=packing_context.original_trajs,
+                        eod_token=tokenizer.eod,
                     )
 
                     # Compute statistics for logging using packed data
