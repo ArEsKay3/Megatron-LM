@@ -20,6 +20,7 @@ from megatron.core.models.common.embeddings.rotary_pos_embedding import (
     RotaryEmbedding,
 )
 from megatron.core.models.common.language_module.language_module import LanguageModule
+from megatron.core.models.hybrid.shared_prefix import SharedPrefixParams
 from megatron.core.packed_seq_params import PackedSeqParams
 from megatron.core.pipeline_parallel.fine_grained_activation_offload import (
     FineGrainedActivationOffloadingInterface as off_interface,
@@ -513,6 +514,7 @@ class GPTModel(LanguageModule):
         padding_mask: Optional[Tensor] = None,
         output_processor: Optional[Callable[..., Tensor]] = None,
         output_processor_context: Optional[Any] = None,
+        shared_prefix_params: Optional[SharedPrefixParams] = None,
     ) -> Tensor:
         """Forward function of the GPT Model This function passes the input tensors
         through the embedding layer, and then the decoder and finally into the post
@@ -559,20 +561,56 @@ class GPTModel(LanguageModule):
 
         rotary_pos_cos_sin = preproc_output[6] if len(preproc_output) == 7 else None
 
+        # Shared-prefix ("tree") packing: standard RoPE indexes the rotary table by packed
+        # position, but each completion C_i must continue from the prefix's positions
+        # (P -> 0..Lp-1, C_i -> Lp..). Gather the table at the prefix-continued position_ids so
+        # RoPE is correct for the packed [P, C_1, ..., C_G] sequence. Mirrors the equivalent
+        # block in HybridModel.forward (validated by mrl_extras/test/test_shared_prefix_*).
+        if (
+            shared_prefix_params is not None
+            and shared_prefix_params.position_ids is not None
+            and rotary_pos_emb is not None
+        ):
+            if self.position_embedding_type != 'rope':
+                raise NotImplementedError(
+                    "shared-prefix position-aware RoPE is only wired for position_embedding_type"
+                    " == 'rope'"
+                )
+            pos = shared_prefix_params.position_ids
+            emb = self.rotary_pos_emb.get_emb(int(pos.max().item()) + 1)
+            rotary_pos_emb = emb.index_select(0, pos.to(emb.device))
+
         # Run decoder.
-        hidden_states = self.decoder(
-            hidden_states=decoder_input,
-            attention_mask=attention_mask,
-            inference_context=inference_context,
-            rotary_pos_emb=rotary_pos_emb,
-            rotary_pos_cos=rotary_pos_cos,
-            rotary_pos_sin=rotary_pos_sin,
-            rotary_pos_cos_sin=rotary_pos_cos_sin,
-            packed_seq_params=packed_seq_params,
-            sequence_len_offset=sequence_len_offset,
-            padding_mask=padding_mask,
-            **(extra_block_kwargs or {}),
-        )
+        if shared_prefix_params is not None:
+            # Shared-prefix forward over the packed [P, C_1, ..., C_G]: one pass with a tree
+            # attention mask + position-aware RoPE, equivalent to G dense [P + C_i] forwards but
+            # without re-encoding P for every completion. Dense (attention-only) analog of
+            # HybridModel's two-pass forward; no Mamba fork plumbing required here.
+            hidden_states = self.decoder.forward_shared_prefix(
+                hidden_states=decoder_input,
+                prefix_len=shared_prefix_params.prefix_len,
+                completion_lens=shared_prefix_params.completion_lens,
+                attention_mask=(
+                    shared_prefix_params.attention_mask
+                    if shared_prefix_params.attention_mask is not None
+                    else attention_mask
+                ),
+                rotary_pos_emb=rotary_pos_emb,
+            )
+        else:
+            hidden_states = self.decoder(
+                hidden_states=decoder_input,
+                attention_mask=attention_mask,
+                inference_context=inference_context,
+                rotary_pos_emb=rotary_pos_emb,
+                rotary_pos_cos=rotary_pos_cos,
+                rotary_pos_sin=rotary_pos_sin,
+                rotary_pos_cos_sin=rotary_pos_cos_sin,
+                packed_seq_params=packed_seq_params,
+                sequence_len_offset=sequence_len_offset,
+                padding_mask=padding_mask,
+                **(extra_block_kwargs or {}),
+            )
 
         return self._postprocess(
             hidden_states=hidden_states,

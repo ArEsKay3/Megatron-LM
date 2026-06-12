@@ -795,3 +795,92 @@ class TransformerBlock(GraphableMegatronModule, MegatronModule):
                 )
 
         return sharded_state_dict
+
+    def forward_shared_prefix(
+        self,
+        hidden_states: Tensor,
+        prefix_len: int,
+        completion_lens,
+        attention_mask: Optional[Tensor] = None,
+        rotary_pos_emb: Optional[Tensor] = None,
+    ):
+        """Shared-prefix ("tree") packed forward for a dense (attention-only) decoder stack.
+
+        Dense analog of HybridStack.forward_shared_prefix. Runs ONE forward over the packed
+        sequence [P, C_1, ..., C_G] (the shared prompt P stored once). Equivalent (fwd + bwd) to
+        running the stack on the G duplicated [P + C_i] sequences but without re-encoding P for
+        every completion -- the shared prompt receives the summed gradient of all its completions
+        through autograd. Unlike HybridStack there is no Mamba fork to plumb: every layer is a
+        TransformerLayer, so prefix sharing is expressed entirely by the tree attention mask plus
+        position-aware RoPE.
+
+        Args:
+            hidden_states: (total_len, 1, D) packed embedded [P, C_1, ..., C_G].
+            prefix_len: Lp (length of the shared prefix P).
+            completion_lens: list of per-completion lengths [Lc_1, ..., Lc_G].
+            attention_mask: tree mask (Megatron convention, True == masked); used only as the
+                dense fallback when FlexAttention is unavailable.
+            rotary_pos_emb: position-aware RoPE built from the layout's prefix-continued
+                ``position_ids`` (set by GPTModel.forward).
+
+        Returns:
+            (total_len, 1, D) packed output (post final_layernorm). Slice per the layout to
+            recover each completion's hidden states / logits.
+        """
+        # Deferred import: megatron.core.transformer must not import from megatron.core.models
+        # at module load (layering). Mirrors the precedent in attention.py's _sp_block_mask path.
+        from megatron.core.models.hybrid.shared_prefix import (
+            HAVE_FLEX_ATTENTION,
+            SharedPrefixContext,
+            build_tree_block_mask,
+        )
+        from megatron.core.transformer.identity_op import IdentityOp
+
+        ctx = SharedPrefixContext(prefix_len, completion_lens)
+        assert hidden_states.shape[0] == ctx.total_len, (
+            f"packed length {hidden_states.shape[0]} != Lp+sum(Lc) {ctx.total_len}"
+        )
+        # Prefer FlexAttention for the tree mask: a sparse BlockMask that skips the fully-masked
+        # sibling-branch blocks. Fall back to the dense `attention_mask` only if FlexAttention is
+        # unavailable (torch < 2.5) or the layout couldn't build a BlockMask.
+        block_mask = (
+            build_tree_block_mask(prefix_len, completion_lens, hidden_states.device)
+            if HAVE_FLEX_ATTENTION
+            else None
+        )
+        for layer in self.layers:
+            if isinstance(layer.self_attention, IdentityOp):
+                # MLP/MoE-only block (no attention): stateless on the packed sequence.
+                hidden_states = layer(
+                    hidden_states=hidden_states, attention_mask=attention_mask
+                )
+            elif block_mask is not None:
+                # FlexAttention tree BlockMask + position-aware RoPE. _run_core_attention reads
+                # `_sp_block_mask` off the self_attention module; clear it in `finally` so the
+                # next non-SP call on the same module sees no leaked mask.
+                layer.self_attention._sp_block_mask = block_mask
+                try:
+                    hidden_states = layer(
+                        hidden_states=hidden_states,
+                        attention_mask=None,
+                        rotary_pos_emb=rotary_pos_emb,
+                    )
+                finally:
+                    layer.self_attention._sp_block_mask = None
+            else:
+                # Dense fallback: the (T, T) tree mask + position-aware RoPE express the sharing.
+                hidden_states = layer(
+                    hidden_states=hidden_states,
+                    attention_mask=attention_mask,
+                    rotary_pos_emb=rotary_pos_emb,
+                )
+            # TransformerLayer returns (hidden_states, context); SP path has no cross-attention.
+            if isinstance(hidden_states, tuple):
+                hidden_states = hidden_states[0]
+
+        if self.final_layernorm is not None:
+            hidden_states = self.final_layernorm(hidden_states)
+
+        return make_viewless_tensor(
+            inp=hidden_states, requires_grad=hidden_states.requires_grad, keep_graph=True
+        )
