@@ -596,6 +596,7 @@ class GPTModel(LanguageModule):
                     else attention_mask
                 ),
                 rotary_pos_emb=rotary_pos_emb,
+                packed_len=shared_prefix_params.packed_len,
             )
         else:
             hidden_states = self.decoder(

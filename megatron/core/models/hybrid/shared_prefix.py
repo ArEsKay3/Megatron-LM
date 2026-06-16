@@ -49,10 +49,20 @@ def _get_compiled_flex():
     return _COMPILED_FLEX
 
 
-def build_tree_segment_ids(prefix_len: int, completion_lens: List[int], device) -> torch.Tensor:
-    """``[total_len]`` long: 0 for prefix tokens, ``i+1`` for completion ``i``'s tokens."""
+def build_tree_segment_ids(
+    prefix_len: int, completion_lens: List[int], device, padded_len: Optional[int] = None
+) -> torch.Tensor:
+    """``[padded_len or total_len]`` long: 0 for prefix tokens, ``i+1`` for completion ``i``'s
+    tokens, and 0 for any trailing pad positions ``[total_len:padded_len]``.
+
+    Trailing pad positions (used to make the packed length divisible by the tensor-parallel size
+    for sequence parallelism) keep segment 0: under the causal rule no real token ever attends them
+    (they sit after every real token), and pad queries attend only the prefix -- their outputs are
+    discarded (never in ``comp_positions``).
+    """
     total = int(prefix_len) + sum(int(x) for x in completion_lens)
-    seg = torch.zeros(total, dtype=torch.long, device=device)
+    n = int(padded_len) if padded_len is not None else total
+    seg = torch.zeros(n, dtype=torch.long, device=device)
     cursor = int(prefix_len)
     for i, lc in enumerate(completion_lens):
         seg[cursor : cursor + int(lc)] = i + 1
@@ -60,17 +70,22 @@ def build_tree_segment_ids(prefix_len: int, completion_lens: List[int], device) 
     return seg
 
 
-def build_tree_block_mask(prefix_len: int, completion_lens: List[int], device):
+def build_tree_block_mask(
+    prefix_len: int, completion_lens: List[int], device, padded_len: Optional[int] = None
+):
     """FlexAttention ``BlockMask`` for the shared-prefix tree: a query attends a key iff the key is
     causally before it AND (the key is in the prefix OR in the same completion branch). Sibling
     branches never attend to each other. Returns ``None`` if FlexAttention is unavailable.
+
+    ``padded_len`` extends the mask to a tensor-parallel-divisible packed length (for sequence
+    parallelism); the trailing pad positions are causally harmless (see ``build_tree_segment_ids``).
 
     This is the kernel realization of ``shared_prefix_packing.dense_tree_mask`` -- built here from
     just (prefix_len, completion_lens) so ``megatron.core`` needs no ``megatron.rl`` import.
     """
     if not HAVE_FLEX_ATTENTION:
         return None
-    seg = build_tree_segment_ids(prefix_len, completion_lens, device)
+    seg = build_tree_segment_ids(prefix_len, completion_lens, device, padded_len=padded_len)
     total = int(seg.numel())
 
     def mask_mod(b, h, q_idx, kv_idx):
@@ -115,9 +130,14 @@ class SharedPrefixParams:
     # tree attention mask (Megatron convention, True == masked): prefix causal + each completion
     # attends the prefix and its own branch only. None is allowed for Mamba/MLP-only stacks.
     attention_mask: Optional[torch.Tensor] = None
-    # prefix-continued positions [total_len] (P -> 0..Lp-1, each C_i -> Lp..Lp+Lc_i-1) for
-    # position-aware RoPE; None falls back to packed-index RoPE (only correct without attention).
+    # prefix-continued positions [packed_len] (P -> 0..Lp-1, each C_i -> Lp..Lp+Lc_i-1, trailing
+    # pad -> 0) for position-aware RoPE; None falls back to packed-index RoPE.
     position_ids: Optional[torch.Tensor] = None
+    # Full packed length fed to the model (>= total_len, padded to a tensor-parallel multiple for
+    # sequence parallelism). The tree BlockMask is built over this length. None == total_len (no
+    # padding). Needed explicitly because under sequence parallelism the decoder sees a
+    # sequence-sharded activation (length packed_len // TP), not the full packed sequence.
+    packed_len: Optional[int] = None
 
     @property
     def total_len(self) -> int:
