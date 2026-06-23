@@ -25,9 +25,11 @@ pass on GPU before the forward integration (Milestone 1b). Keeping these as pure
 import contextlib
 import types
 from dataclasses import dataclass, field
-from typing import Callable, List
+from typing import Callable, Dict, List, Sequence, Tuple
 
 import torch
+
+from megatron.rl.tree_layout import PackedTreeLayout
 
 
 @dataclass
@@ -463,3 +465,119 @@ def extract_completion_logprobs(
     logp = torch.log_softmax(logits[layout.prev_positions], dim=-1)   # [n_tok, vocab]
     targets = packed_tokens[layout.comp_positions].unsqueeze(-1)      # [n_tok, 1]
     return logp.gather(-1, targets).squeeze(-1)                        # [n_tok]
+
+
+@dataclass
+class ForestBin:
+    """One physical microbatch bin as a forest of shared-prefix trees + block-diag atoms.
+
+    ``groups[gid] = (prefix_len, [trajectory indices])`` -- each distinct group present
+    contributes its prompt ONCE (a depth-1 tree). ``blockdiag`` holds trajectories packed
+    without sharing (one single-node tree each). ``layout`` is the materialized
+    :class:`PackedTreeLayout` (nodes ordered: each group's prefix then its completions,
+    then the block-diag atoms). ``used_tokens`` counts each group's prompt once.
+    """
+
+    groups: Dict[int, Tuple[int, List[int]]] = field(default_factory=dict)
+    blockdiag: List[Tuple[int, int]] = field(default_factory=list)  # (traj_idx, seq_len)
+    used_tokens: int = 0
+    layout: PackedTreeLayout = None
+
+
+def plan_shared_prefix_forest_bins(
+    *,
+    group_ids: Sequence[int],
+    prompt_lens: Sequence[int],
+    real_lens: Sequence[int],
+    seq_lengths: Sequence[int],
+    bin_size: int,
+    max_sequences_per_bin: int = 16,
+) -> List[ForestBin]:
+    """Multi-group ("forest") shared-prefix packing -- the Case-1 generalization of
+    :func:`plan_shared_prefix_bins` (which is one group per bin).
+
+    Co-packs completions from DIFFERENT groups into each bin, charging a prompt only the
+    first time its group appears in a bin, so bins fill toward ``bin_size`` instead of
+    wasting the tail of each group's last bin. Packs at the granularity of individual
+    completions (best-fit-decreasing); ``max_sequences_per_bin`` caps completions behind one
+    prompt *within a bin* (a group may span several bins). Trajectories that can't share
+    (``group_id < 0``, no prompt, no completion, singleton group, or a single ``[P+C]``
+    exceeding ``bin_size``) become block-diagonal single-node trees in the same bins.
+
+    All inputs are per-trajectory (length N). Returns a list of :class:`ForestBin`, each with
+    its :class:`PackedTreeLayout`. Pure Python and stack-agnostic: NeMo-RL and Megatron's RL
+    loop both call this, then materialize tensors / assign bins to DP ranks themselves.
+    """
+    from collections import defaultdict
+
+    n = len(group_ids)
+    buckets: Dict[int, List[int]] = defaultdict(list)
+    blockdiag_atoms: List[int] = []
+    for i in range(n):
+        gid = int(group_ids[i])
+        lp = int(prompt_lens[i])
+        if gid < 0 or lp <= 0 or lp >= int(real_lens[i]):
+            blockdiag_atoms.append(i)
+        else:
+            buckets[gid].append(i)
+
+    comp_items: List[Tuple[int, int, int, int]] = []  # (Lc, gid, Lp, traj_idx)
+    for gid, idxs in buckets.items():
+        if len(idxs) < 2:
+            blockdiag_atoms.extend(idxs)  # singleton group -> no real sharing
+            continue
+        lp = int(prompt_lens[idxs[0]])
+        for j in idxs:
+            if int(real_lens[j]) > bin_size:
+                blockdiag_atoms.append(j)  # can't even share alone -> block-diag/THD path
+            else:
+                comp_items.append((int(real_lens[j]) - lp, gid, lp, j))
+    comp_items.sort(reverse=True)  # decreasing completion length
+
+    bins: List[ForestBin] = []
+
+    def _place_completion(gid: int, lp: int, traj: int) -> None:
+        best, best_rem = None, None
+        for b in bins:
+            present = gid in b.groups
+            if present and len(b.groups[gid][1]) >= max_sequences_per_bin:
+                continue  # bin already holds the max completions for this group
+            inc = (int(real_lens[traj]) - lp) + (0 if present else lp)
+            rem = bin_size - (b.used_tokens + inc)
+            if rem >= 0 and (best_rem is None or rem < best_rem):
+                best, best_rem = b, rem
+        if best is None:
+            best = ForestBin()
+            bins.append(best)
+        if gid not in best.groups:
+            best.groups[gid] = (lp, [])
+            best.used_tokens += lp
+        best.groups[gid][1].append(traj)
+        best.used_tokens += int(real_lens[traj]) - lp
+
+    for _lc, gid, lp, traj in comp_items:
+        _place_completion(gid, lp, traj)
+
+    for traj in sorted(blockdiag_atoms, key=lambda t: -int(seq_lengths[t])):
+        sl = int(seq_lengths[traj])
+        best, best_rem = None, None
+        for b in bins:
+            rem = bin_size - (b.used_tokens + sl)
+            if rem >= 0 and (best_rem is None or rem < best_rem):
+                best, best_rem = b, rem
+        if best is None:
+            best = ForestBin()
+            bins.append(best)
+        best.blockdiag.append((traj, sl))
+        best.used_tokens += sl
+
+    for b in bins:  # materialize the forest layout per bin
+        sub: List[PackedTreeLayout] = []
+        for gid, (lp, comps) in b.groups.items():
+            sub.append(
+                PackedTreeLayout.from_shared_prefix(lp, [int(real_lens[c]) - lp for c in comps])
+            )
+        for traj, sl in b.blockdiag:
+            sub.append(PackedTreeLayout(node_start=[0], node_len=[sl], node_parent=[-1]))
+        b.layout = PackedTreeLayout.concat(sub)
+    return bins
