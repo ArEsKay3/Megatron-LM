@@ -271,16 +271,44 @@ def flash_composed_tree_attention(query, key, value, prefix_len, completion_lens
     return out.reshape(sq, 1, np_ * hn).contiguous()   # [sq, b, np*hn]
 
 
-def run_shared_prefix_attention(query, key, value, *, block_mask, layout=None, scale=None):
+def flash_composed_forest_attention(query, key, value, forest, scale=None):
+    """Forest (multi-group / Case-1) shared-prefix attention.
+
+    ``forest`` is a list of ``(token_offset, prefix_len, completion_lens)``, one per group packed
+    into this bin. Groups are block-diagonal (a token never attends another group), so the forest
+    forward is just the validated single-group :func:`flash_composed_tree_attention` applied to
+    each group's contiguous slice, written back into the packed output. Trailing pad positions
+    (beyond the last group) are zero. (A single multi-segment ``cu_seqlens`` call would fuse the
+    groups into one kernel launch -- a later perf optimization; this is the correctness-first form.
+
+    Generalizes the depth-1 forest now; arbitrary-depth trees (Case 2) extend the per-group call,
+    not this loop.)
+    """
+    sq, b, np_, hn = query.shape
+    assert b == 1, "shared-prefix packing uses a single packed sequence (b == 1)"
+    out = query.new_zeros(sq, np_ * hn)
+    for off, prefix_len, completion_lens in forest:
+        total = int(prefix_len) + sum(int(c) for c in completion_lens)
+        o = flash_composed_tree_attention(
+            query[off : off + total], key[off : off + total], value[off : off + total],
+            prefix_len, completion_lens, scale=scale,
+        )  # [total, 1, np*hn]
+        out[off : off + total] = o.reshape(total, np_ * hn)
+    return out.reshape(sq, 1, np_ * hn).contiguous()
+
+
+def run_shared_prefix_attention(query, key, value, *, block_mask, layout=None, forest=None, scale=None):
     """Dispatch shared-prefix attention to the selected backend.
 
-    ``flash_composed`` needs the ``(prefix_len, completion_lens)`` ``layout`` and is used only
-    when it is present (set by the dense ``TransformerBlock.forward_shared_prefix``). The hybrid
-    path supplies only ``block_mask`` (no layout), so it always takes the flex path even if the
-    backend is set to ``flash_composed`` -- warned once.
+    ``forest`` (a list of per-group ``(offset, prefix_len, completion_lens)``) selects the
+    multi-group Case-1 path; ``layout`` (a single ``(prefix_len, completion_lens)``) is the
+    one-group path. Both require ``flash_composed`` + a layout; the hybrid path supplies only
+    ``block_mask`` (no layout/forest) and always takes the flex path (warned once).
     """
     global _SP_FALLBACK_WARNED
     if sp_attention_backend() == "flash_composed":
+        if forest is not None:
+            return flash_composed_forest_attention(query, key, value, forest, scale=scale)
         if layout is not None:
             return flash_composed_tree_attention(query, key, value, layout[0], layout[1], scale=scale)
         if not _SP_FALLBACK_WARNED:
