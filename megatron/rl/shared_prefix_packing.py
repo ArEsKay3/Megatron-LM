@@ -118,34 +118,53 @@ class ForestLayout:
     position_ids: torch.Tensor        # [total_len] prefix-continued positions (per-group)
     comp_positions: torch.Tensor      # [n_comp_tok] packed index of each completion token
     prev_positions: torch.Tensor      # [n_comp_tok] index whose logit predicts it (per-group fan-out)
-    groups: List[tuple]               # [(offset, prefix_len, completion_lens), ...]
+    groups: List[tuple]               # [(offset, prefix_len, completion_lens), ...] for attention
+    # SharedPrefixLayout-compatible branch fields (branch == one completion, global order
+    # group-by-group) so the logprob fan-out scatters a forest into [n_completions, S-1]:
+    completion_lens: List[int]        # [G] per-completion length, branch order
+    branch_starts: List[int]          # [G] absolute packed offset of each completion
+    branch_of_token: torch.Tensor     # [n_comp_tok] global branch index per completion token
+    branch_prefix_lens: torch.Tensor  # [G] prefix length of each branch's GROUP (per-group Lp)
     n_completion_tokens: int = field(default=0)
 
 
 def build_forest_layout(layout: "PackedTreeLayout", device="cpu") -> ForestLayout:
     """Build a :class:`ForestLayout` from a depth-1 forest :class:`PackedTreeLayout`.
 
-    Derives the per-group ``(offset, prefix_len, completion_lens)`` and the global
-    ``position_ids`` / ``comp_positions`` / ``prev_positions`` (each completion's first token
-    scored from ITS group's prefix-last logit) directly from the forest -- identical to
-    concatenating per-group :func:`build_shared_prefix_layout` with the right offsets.
+    Derives the per-group ``(offset, prefix_len, completion_lens)`` plus the global
+    ``position_ids`` / ``comp_positions`` / ``prev_positions`` and the per-branch fields
+    (one branch == one completion, ordered group-by-group). Identical to concatenating
+    per-group :func:`build_shared_prefix_layout` with the right offsets, but ``branch_prefix_lens``
+    records EACH branch's own group prefix length (the forest generalization -- groups have
+    different prompt lengths), which the logprob fan-out uses to place into the per-trajectory view.
     """
     ns, nl, npar = layout.node_start, layout.node_len, layout.node_parent
-    # per-group (offset, prefix_len, completion_lens): each root + its children, in node order
     children = {r: [] for r in layout.roots()}
     for i in range(layout.num_nodes):
         p = int(npar[i])
         if p != -1:
             children[p].append(i)
+
     groups = []
+    comp: List[int] = []
+    completion_lens: List[int] = []
+    branch_starts: List[int] = []
+    branch_prefix_lens: List[int] = []
+    branch_of_token: List[int] = []
+    b = 0  # global branch (completion) index, group-by-group
     for r in layout.roots():
-        groups.append((int(ns[r]), int(nl[r]), [int(nl[c]) for c in children[r]]))
+        Lp_r = int(nl[r])
+        groups.append((int(ns[r]), Lp_r, [int(nl[c]) for c in children[r]]))
+        for c in children[r]:
+            lc = int(nl[c])
+            completion_lens.append(lc)
+            branch_starts.append(int(ns[c]))
+            branch_prefix_lens.append(Lp_r)
+            comp.extend(range(int(ns[c]), int(ns[c]) + lc))
+            branch_of_token.extend([b] * lc)
+            b += 1
 
     prev = layout.prev_token_index()
-    comp = []
-    for r in layout.roots():
-        for c in children[r]:
-            comp.extend(range(int(ns[c]), int(ns[c]) + int(nl[c])))
 
     def _t(xs):
         return torch.tensor(xs, dtype=torch.long, device=device)
@@ -156,6 +175,10 @@ def build_forest_layout(layout: "PackedTreeLayout", device="cpu") -> ForestLayou
         comp_positions=_t(comp),
         prev_positions=_t([prev[p] for p in comp]),
         groups=groups,
+        completion_lens=completion_lens,
+        branch_starts=branch_starts,
+        branch_of_token=_t(branch_of_token),
+        branch_prefix_lens=_t(branch_prefix_lens),
         n_completion_tokens=len(comp),
     )
 
@@ -526,17 +549,17 @@ def extract_completion_logprobs(
 
 @dataclass
 class ForestBin:
-    """One physical microbatch bin as a forest of shared-prefix trees + block-diag atoms.
+    """One physical microbatch bin as a forest of shared-prefix trees (Case 1).
 
     ``groups[gid] = (prefix_len, [trajectory indices])`` -- each distinct group present
-    contributes its prompt ONCE (a depth-1 tree). ``blockdiag`` holds trajectories packed
-    without sharing (one single-node tree each). ``layout`` is the materialized
-    :class:`PackedTreeLayout` (nodes ordered: each group's prefix then its completions,
-    then the block-diag atoms). ``used_tokens`` counts each group's prompt once.
+    contributes its prompt ONCE (a depth-1 tree). ``layout`` is the materialized
+    :class:`PackedTreeLayout` (nodes ordered: each group's prefix then its completions, in
+    ``groups`` iteration order). ``used_tokens`` counts each group's prompt once. Bins hold
+    ONLY shareable groups; non-shareable trajectories are returned separately for the existing
+    block-diagonal (THD) packer, keeping the packed-tensor build homogeneous.
     """
 
     groups: Dict[int, Tuple[int, List[int]]] = field(default_factory=dict)
-    blockdiag: List[Tuple[int, int]] = field(default_factory=list)  # (traj_idx, seq_len)
     used_tokens: int = 0
     layout: PackedTreeLayout = None
 
@@ -549,7 +572,7 @@ def plan_shared_prefix_forest_bins(
     seq_lengths: Sequence[int],
     bin_size: int,
     max_sequences_per_bin: int = 16,
-) -> List[ForestBin]:
+) -> Tuple[List[ForestBin], List[int]]:
     """Multi-group ("forest") shared-prefix packing -- the Case-1 generalization of
     :func:`plan_shared_prefix_bins` (which is one group per bin).
 
@@ -557,13 +580,16 @@ def plan_shared_prefix_forest_bins(
     first time its group appears in a bin, so bins fill toward ``bin_size`` instead of
     wasting the tail of each group's last bin. Packs at the granularity of individual
     completions (best-fit-decreasing); ``max_sequences_per_bin`` caps completions behind one
-    prompt *within a bin* (a group may span several bins). Trajectories that can't share
-    (``group_id < 0``, no prompt, no completion, singleton group, or a single ``[P+C]``
-    exceeding ``bin_size``) become block-diagonal single-node trees in the same bins.
+    prompt *within a bin* (a group may span several bins).
 
-    All inputs are per-trajectory (length N). Returns a list of :class:`ForestBin`, each with
-    its :class:`PackedTreeLayout`. Pure Python and stack-agnostic: NeMo-RL and Megatron's RL
-    loop both call this, then materialize tensors / assign bins to DP ranks themselves.
+    Trajectories that can't share (``group_id < 0``, no prompt, no completion, singleton group,
+    or a single ``[P+C]`` exceeding ``bin_size``) are NOT co-packed -- they are returned as a
+    list of indices for the caller's existing block-diagonal (THD) packer, so forest bins stay
+    homogeneous (all shared-prefix) and the packed-tensor build is uniform.
+
+    All inputs are per-trajectory (length N). Returns ``(bins, blockdiag_indices)`` -- ``bins``
+    a list of :class:`ForestBin` (each with its :class:`PackedTreeLayout`), ``blockdiag_indices``
+    the trajectory indices to pack normally. Pure Python and stack-agnostic.
     """
     from collections import defaultdict
 
@@ -615,26 +641,10 @@ def plan_shared_prefix_forest_bins(
     for _lc, gid, lp, traj in comp_items:
         _place_completion(gid, lp, traj)
 
-    for traj in sorted(blockdiag_atoms, key=lambda t: -int(seq_lengths[t])):
-        sl = int(seq_lengths[traj])
-        best, best_rem = None, None
-        for b in bins:
-            rem = bin_size - (b.used_tokens + sl)
-            if rem >= 0 and (best_rem is None or rem < best_rem):
-                best, best_rem = b, rem
-        if best is None:
-            best = ForestBin()
-            bins.append(best)
-        best.blockdiag.append((traj, sl))
-        best.used_tokens += sl
-
-    for b in bins:  # materialize the forest layout per bin
-        sub: List[PackedTreeLayout] = []
-        for gid, (lp, comps) in b.groups.items():
-            sub.append(
-                PackedTreeLayout.from_shared_prefix(lp, [int(real_lens[c]) - lp for c in comps])
-            )
-        for traj, sl in b.blockdiag:
-            sub.append(PackedTreeLayout(node_start=[0], node_len=[sl], node_parent=[-1]))
+    for b in bins:  # materialize the forest layout per bin (groups in insertion order)
+        sub = [
+            PackedTreeLayout.from_shared_prefix(lp, [int(real_lens[c]) - lp for c in comps])
+            for gid, (lp, comps) in b.groups.items()
+        ]
         b.layout = PackedTreeLayout.concat(sub)
-    return bins
+    return bins, sorted(blockdiag_atoms)

@@ -804,6 +804,7 @@ class TransformerBlock(GraphableMegatronModule, MegatronModule):
         attention_mask: Optional[Tensor] = None,
         rotary_pos_emb: Optional[Tensor] = None,
         packed_len: Optional[int] = None,
+        forest=None,
     ):
         """Shared-prefix ("tree") packed forward for a dense (attention-only) decoder stack.
 
@@ -860,17 +861,20 @@ class TransformerBlock(GraphableMegatronModule, MegatronModule):
         # (prefix_len, completion_lens) layout and needs NO BlockMask -- so skip the (expensive,
         # O(packed_len^2)) build entirely in that mode. The flex backend needs the BlockMask.
         use_flash_composed = sp_attention_backend() == "flash_composed"
+        # Case-1 forest (multiple groups per bin): flash-composed only, no BlockMask -- each group
+        # is block-diagonal and handled by flash_composed_forest_attention via ``_sp_forest``.
+        is_forest = forest is not None
         block_mask = (
             build_tree_block_mask(
                 prefix_len, completion_lens, hidden_states.device, padded_len=full_len
             )
-            if (HAVE_FLEX_ATTENTION and not use_flash_composed)
+            if (HAVE_FLEX_ATTENTION and not use_flash_composed and not is_forest)
             else None
         )
-        # Run the shared-prefix attention kernel (flex BlockMask or flash-composed) when either a
-        # BlockMask was built or the flash-composed layout is available.
-        use_sp_kernel = block_mask is not None or use_flash_composed
-        sp_layout = (prefix_len, completion_lens)
+        # Run the shared-prefix attention kernel when a BlockMask was built, the flash-composed
+        # single-group layout applies, or a forest is present.
+        use_sp_kernel = block_mask is not None or use_flash_composed or is_forest
+        sp_layout = None if is_forest else (prefix_len, completion_lens)
         for layer in self.layers:
             if isinstance(layer.self_attention, IdentityOp):
                 # MLP/MoE-only block (no attention): stateless on the packed sequence.
@@ -878,11 +882,12 @@ class TransformerBlock(GraphableMegatronModule, MegatronModule):
                     hidden_states=hidden_states, attention_mask=attention_mask
                 )
             elif use_sp_kernel:
-                # _run_core_attention reads `_sp_block_mask` (flex) and `_sp_layout`
-                # (flash-composed) off the self_attention module; clear both in `finally` so the
-                # next non-SP call on the same module sees no leaked state.
+                # _run_core_attention reads `_sp_block_mask` (flex), `_sp_layout` (flash-composed
+                # single group), and `_sp_forest` (flash-composed multi-group) off the
+                # self_attention module; clear all in `finally` so no state leaks to the next call.
                 layer.self_attention._sp_block_mask = block_mask
                 layer.self_attention._sp_layout = sp_layout
+                layer.self_attention._sp_forest = forest
                 try:
                     hidden_states = layer(
                         hidden_states=hidden_states,
@@ -892,6 +897,7 @@ class TransformerBlock(GraphableMegatronModule, MegatronModule):
                 finally:
                     layer.self_attention._sp_block_mask = None
                     layer.self_attention._sp_layout = None
+                    layer.self_attention._sp_forest = None
             else:
                 # Dense fallback: the (T, T) tree mask + position-aware RoPE express the sharing.
                 hidden_states = layer(

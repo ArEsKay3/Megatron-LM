@@ -343,6 +343,10 @@ class SharedPrefixParams:
     # padding). Needed explicitly because under sequence parallelism the decoder sees a
     # sequence-sharded activation (length packed_len // TP), not the full packed sequence.
     packed_len: Optional[int] = None
+    # Case-1 multi-group "forest" bin: list of per-group ``(token_offset, prefix_len,
+    # completion_lens)``. When set, the forward uses the forest attention (groups are
+    # block-diagonal) instead of the single-group ``prefix_len``/``completion_lens`` above.
+    forest: Optional[List[tuple]] = None
 
     @property
     def total_len(self) -> int:
