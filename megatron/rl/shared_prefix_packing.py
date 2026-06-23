@@ -103,6 +103,63 @@ def build_shared_prefix_layout(
     )
 
 
+@dataclass
+class ForestLayout:
+    """Multi-group ("forest") generalization of :class:`SharedPrefixLayout` for one packed bin.
+
+    Mirrors ``SharedPrefixLayout``'s index fields so the EXISTING RoPE (``position_ids``) and
+    logprob fan-out (``comp_positions``/``prev_positions``) code consume a forest unchanged. Adds
+    ``groups`` -- one ``(token_offset, prefix_len, completion_lens)`` per group -- which the
+    attention forward (``flash_composed_forest_attention``) loops over (each group is
+    block-diagonal: no cross-group attention).
+    """
+
+    total_len: int
+    position_ids: torch.Tensor        # [total_len] prefix-continued positions (per-group)
+    comp_positions: torch.Tensor      # [n_comp_tok] packed index of each completion token
+    prev_positions: torch.Tensor      # [n_comp_tok] index whose logit predicts it (per-group fan-out)
+    groups: List[tuple]               # [(offset, prefix_len, completion_lens), ...]
+    n_completion_tokens: int = field(default=0)
+
+
+def build_forest_layout(layout: "PackedTreeLayout", device="cpu") -> ForestLayout:
+    """Build a :class:`ForestLayout` from a depth-1 forest :class:`PackedTreeLayout`.
+
+    Derives the per-group ``(offset, prefix_len, completion_lens)`` and the global
+    ``position_ids`` / ``comp_positions`` / ``prev_positions`` (each completion's first token
+    scored from ITS group's prefix-last logit) directly from the forest -- identical to
+    concatenating per-group :func:`build_shared_prefix_layout` with the right offsets.
+    """
+    ns, nl, npar = layout.node_start, layout.node_len, layout.node_parent
+    # per-group (offset, prefix_len, completion_lens): each root + its children, in node order
+    children = {r: [] for r in layout.roots()}
+    for i in range(layout.num_nodes):
+        p = int(npar[i])
+        if p != -1:
+            children[p].append(i)
+    groups = []
+    for r in layout.roots():
+        groups.append((int(ns[r]), int(nl[r]), [int(nl[c]) for c in children[r]]))
+
+    prev = layout.prev_token_index()
+    comp = []
+    for r in layout.roots():
+        for c in children[r]:
+            comp.extend(range(int(ns[c]), int(ns[c]) + int(nl[c])))
+
+    def _t(xs):
+        return torch.tensor(xs, dtype=torch.long, device=device)
+
+    return ForestLayout(
+        total_len=layout.total_len,
+        position_ids=_t(layout.position_ids()),
+        comp_positions=_t(comp),
+        prev_positions=_t([prev[p] for p in comp]),
+        groups=groups,
+        n_completion_tokens=len(comp),
+    )
+
+
 def dense_tree_mask(layout: SharedPrefixLayout, device=None) -> torch.Tensor:
     """Return a ``[total_len, total_len]`` boolean ``allowed[q, k]`` mask.
 
