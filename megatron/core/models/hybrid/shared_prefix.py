@@ -255,7 +255,9 @@ def flash_composed_tree_attention(query, key, value, prefix_len, completion_lens
     denom = wa + wb
     wa = (wa / denom).transpose(0, 1).unsqueeze(-1)  # [ncomp, np, 1]
     wb = (wb / denom).transpose(0, 1).unsqueeze(-1)
-    o_comp = oa * wa + ob * wb                         # [ncomp, np, hn]
+    # LSE (hence wa/wb) is fp32; recast the merged output back to the input dtype so the packed
+    # output matches the flex path and downstream Linear layers (bf16) do not see an fp32 input.
+    o_comp = (oa * wa + ob * wb).to(query.dtype)       # [ncomp, np, hn]
 
     # prefix rows: causal self-attention over [P].
     cu_p = torch.tensor([0, P], dtype=torch.int32, device=q.device)
