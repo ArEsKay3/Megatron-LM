@@ -21,10 +21,14 @@ shared between ``megatron/core/ssm`` (MambaLayer) and ``megatron/core/models/hyb
 without an import cycle.
 """
 
+import logging
+import os
 from dataclasses import dataclass
 from typing import Iterator, List, Optional, Tuple
 
 import torch
+
+logger = logging.getLogger(__name__)
 
 try:
     from torch.nn.attention.flex_attention import create_block_mask, flex_attention
@@ -47,6 +51,45 @@ def _get_compiled_flex():
     if _COMPILED_FLEX is None:
         _COMPILED_FLEX = torch.compile(flex_attention)
     return _COMPILED_FLEX
+
+
+# --- Lightweight shared-prefix attention profiling -------------------------------------------
+# Attributes the SP attention cost into mask-build / flex-kernel and exposes a *recompile proxy*
+# (count of DISTINCT packed lengths -- torch.compile is shape-keyed, so each new length is a fresh
+# compile). Call counts + unique-shape tracking are free (no sync) and always on. Per-call CUDA-
+# event timing forces a sync, so it is gated behind NRL_SP_PROFILE=1. ``maybe_log_sp_profile``
+# emits a summary line every ``NRL_SP_PROFILE_EVERY`` flex calls (default 200).
+_SP_PROFILE_TIMING = os.environ.get("NRL_SP_PROFILE", "0") not in ("0", "", "false", "False")
+_SP_PROFILE_EVERY = int(os.environ.get("NRL_SP_PROFILE_EVERY", "200"))
+_SP_PROFILE = {
+    "flex_calls": 0,
+    "mask_builds": 0,
+    "flex_shapes": set(),  # distinct packed lengths -> recompile proxy
+    "mask_ms": 0.0,        # only populated when _SP_PROFILE_TIMING
+    "flex_ms": 0.0,
+}
+
+
+def sp_profile_summary() -> dict:
+    """Snapshot of shared-prefix attention counters (safe to call any time)."""
+    p = _SP_PROFILE
+    calls = p["flex_calls"]
+    n_shapes = len(p["flex_shapes"])
+    return {
+        "shared_prefix/flex_calls": calls,
+        "shared_prefix/mask_builds": p["mask_builds"],
+        "shared_prefix/unique_flex_shapes": n_shapes,
+        # ~1.0 means almost every call is a new shape (recompile-bound); ~0 means shapes recur.
+        "shared_prefix/recompile_proxy": (n_shapes / calls) if calls else 0.0,
+        "shared_prefix/mask_ms_total": p["mask_ms"],
+        "shared_prefix/flex_ms_total": p["flex_ms"],
+        "shared_prefix/timing_enabled": _SP_PROFILE_TIMING,
+    }
+
+
+def maybe_log_sp_profile() -> None:
+    if _SP_PROFILE["flex_calls"] % _SP_PROFILE_EVERY == 0 and _SP_PROFILE["flex_calls"] > 0:
+        logger.info("[shared_prefix profile] %s", sp_profile_summary())
 
 
 def build_tree_segment_ids(
@@ -94,6 +137,16 @@ def build_tree_block_mask(
         same_branch = seg[kv_idx] == seg[q_idx]
         return causal & (k_is_prefix | same_branch)
 
+    _SP_PROFILE["mask_builds"] += 1
+    if _SP_PROFILE_TIMING and device is not None and str(device).startswith("cuda"):
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
+        start.record()
+        bm = create_block_mask(mask_mod, B=1, H=None, Q_LEN=total, KV_LEN=total, device=device)
+        end.record()
+        torch.cuda.synchronize()
+        _SP_PROFILE["mask_ms"] += start.elapsed_time(end)
+        return bm
     return create_block_mask(mask_mod, B=1, H=None, Q_LEN=total, KV_LEN=total, device=device)
 
 
@@ -110,9 +163,131 @@ def flex_tree_attention(
     k = key.permute(1, 2, 0, 3)  # [b, ng, sk, hn]
     v = value.permute(1, 2, 0, 3)
     enable_gqa = q.shape[1] != k.shape[1]
-    out = _get_compiled_flex()(q, k, v, block_mask=block_mask, enable_gqa=enable_gqa, scale=scale)
     sq, b = query.shape[0], query.shape[1]
+
+    _SP_PROFILE["flex_calls"] += 1
+    _SP_PROFILE["flex_shapes"].add(int(sq))  # distinct packed lengths -> recompile proxy
+    if _SP_PROFILE_TIMING and query.is_cuda:
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
+        start.record()
+        out = _get_compiled_flex()(q, k, v, block_mask=block_mask, enable_gqa=enable_gqa, scale=scale)
+        end.record()
+        torch.cuda.synchronize()
+        _SP_PROFILE["flex_ms"] += start.elapsed_time(end)
+    else:
+        out = _get_compiled_flex()(q, k, v, block_mask=block_mask, enable_gqa=enable_gqa, scale=scale)
+    maybe_log_sp_profile()
     return out.permute(2, 0, 1, 3).reshape(sq, b, -1).contiguous()  # [sq, b, np*hn]
+
+
+# --- Backend selection: FlexAttention (default) vs flash-composed -----------------------------
+# FlexAttention's *forward* is at parity with flash, but its generated-Triton *backward* is
+# ~4x slower than flash's hand-tuned CUDA backward at equal FLOPs (worse with GQA), making the
+# shared-prefix training step backward-bound. ``flash_composed`` rebuilds the same tree attention
+# from flash kernels + an online-softmax merge (see ``flash_composed_tree_attention``), reaching
+# ~flash-class fwd AND bwd. Switch with NRL_SP_ATTENTION_BACKEND=flash_composed (default: flex).
+# Dense attention path only; the hybrid/Mamba path always uses flex (no ``_sp_layout`` set).
+_SP_ATTENTION_BACKEND = os.environ.get("NRL_SP_ATTENTION_BACKEND", "flex").lower()
+_SP_FALLBACK_WARNED = False
+
+
+def sp_attention_backend() -> str:
+    """Selected shared-prefix attention backend: ``"flex"`` or ``"flash_composed"``."""
+    return _SP_ATTENTION_BACKEND
+
+
+def flash_composed_tree_attention(query, key, value, prefix_len, completion_lens, scale=None):
+    """Tree attention rebuilt from flash kernels (no FlexAttention BlockMask).
+
+    A completion token attends {all prefix} ∪ {its own branch, causally}. That union splits into
+    two flash-doable attentions whose softmaxes are merged by log-sum-exp (LSE):
+      (a) completions -> prefix     : NON-causal flash (prefix wholly precedes the completions)
+      (b) completions -> own branch : block-diagonal causal flash_varlen over [C_1..C_G]
+    Prefix rows come from a causal flash over [P]. Trailing pad positions (TP-divisibility) get
+    zero outputs -- they are never read downstream (not in ``comp_positions``). Flash handles GQA
+    natively for fwd AND bwd, so this is ~flash-class where FlexAttention's backward is not.
+
+    ``query`` is ``[sq, b, np, hn]`` and ``key``/``value`` ``[sq, b, ng, hn]`` (core-attention
+    layout); ``b`` must be 1 (a single packed sequence). Returns ``[sq, b, np*hn]`` to match
+    ``flex_tree_attention`` / the static ``core_attention`` output. Same default scale
+    (1/sqrt(hn)) as the flex path when ``scale is None``.
+    """
+    from flash_attn import flash_attn_func, flash_attn_varlen_func
+
+    sq, b, np_, hn = query.shape
+    assert b == 1, "shared-prefix packing uses a single packed sequence (b == 1)"
+    P = int(prefix_len)
+    Cs = [int(c) for c in completion_lens]
+    ncomp = sum(Cs)
+    total = P + ncomp
+    assert sq >= total, f"packed length {sq} < Lp+sum(Lc) {total}"
+
+    q = query[:, 0]
+    k = key[:, 0]
+    v = value[:, 0]  # [sq, n, hn]
+    qf, kf, vf = q[:P], k[:P], v[:P]
+    qc, kc, vc = q[P:total], k[P:total], v[P:total]
+
+    # (a) completions attend the full prefix (non-causal cross-attention).
+    oa, lse_a, _ = flash_attn_func(
+        qc.unsqueeze(0), kf.unsqueeze(0), vf.unsqueeze(0),
+        softmax_scale=scale, causal=False, return_attn_probs=True,
+    )
+    oa = oa.squeeze(0)        # [ncomp, np, hn]
+    lse_a = lse_a.squeeze(0)  # [np, ncomp]
+
+    # (b) completions attend their own branch, causally (block-diagonal varlen).
+    cu = [0]
+    for c in Cs:
+        cu.append(cu[-1] + c)
+    cu = torch.tensor(cu, dtype=torch.int32, device=q.device)
+    max_c = max(Cs)
+    ob, lse_b, _ = flash_attn_varlen_func(
+        qc, kc, vc, cu, cu, max_c, max_c,
+        softmax_scale=scale, causal=True, return_attn_probs=True,
+    )                          # ob [ncomp, np, hn], lse_b [np, ncomp]
+
+    # online-softmax (LSE) merge -> exact softmax over the union of attended keys.
+    m = torch.maximum(lse_a, lse_b)
+    wa = torch.exp(lse_a - m)
+    wb = torch.exp(lse_b - m)
+    denom = wa + wb
+    wa = (wa / denom).transpose(0, 1).unsqueeze(-1)  # [ncomp, np, 1]
+    wb = (wb / denom).transpose(0, 1).unsqueeze(-1)
+    o_comp = oa * wa + ob * wb                         # [ncomp, np, hn]
+
+    # prefix rows: causal self-attention over [P].
+    cu_p = torch.tensor([0, P], dtype=torch.int32, device=q.device)
+    o_pre = flash_attn_varlen_func(
+        qf, kf, vf, cu_p, cu_p, P, P, softmax_scale=scale, causal=True,
+    )                          # [P, np, hn]
+
+    out = torch.cat([o_pre, o_comp], dim=0)            # [total, np, hn]
+    if sq > total:  # trailing pad positions; outputs discarded downstream.
+        out = torch.cat([out, out.new_zeros(sq - total, np_, hn)], dim=0)
+    return out.reshape(sq, 1, np_ * hn).contiguous()   # [sq, b, np*hn]
+
+
+def run_shared_prefix_attention(query, key, value, *, block_mask, layout=None, scale=None):
+    """Dispatch shared-prefix attention to the selected backend.
+
+    ``flash_composed`` needs the ``(prefix_len, completion_lens)`` ``layout`` and is used only
+    when it is present (set by the dense ``TransformerBlock.forward_shared_prefix``). The hybrid
+    path supplies only ``block_mask`` (no layout), so it always takes the flex path even if the
+    backend is set to ``flash_composed`` -- warned once.
+    """
+    global _SP_FALLBACK_WARNED
+    if sp_attention_backend() == "flash_composed":
+        if layout is not None:
+            return flash_composed_tree_attention(query, key, value, layout[0], layout[1], scale=scale)
+        if not _SP_FALLBACK_WARNED:
+            logger.warning(
+                "NRL_SP_ATTENTION_BACKEND=flash_composed but no shared-prefix layout was "
+                "provided (e.g. hybrid/Mamba path); falling back to FlexAttention."
+            )
+            _SP_FALLBACK_WARNED = True
+    return flex_tree_attention(query, key, value, block_mask, scale=scale)
 
 
 @dataclass

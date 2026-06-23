@@ -834,6 +834,7 @@ class TransformerBlock(GraphableMegatronModule, MegatronModule):
             HAVE_FLEX_ATTENTION,
             SharedPrefixContext,
             build_tree_block_mask,
+            sp_attention_backend,
         )
         from megatron.core.transformer.identity_op import IdentityOp
 
@@ -855,24 +856,33 @@ class TransformerBlock(GraphableMegatronModule, MegatronModule):
         # sibling-branch blocks. Fall back to the dense `attention_mask` only if FlexAttention is
         # unavailable (torch < 2.5) or the layout couldn't build a BlockMask. Build the mask over
         # the full (padded) packed length.
+        # The flash-composed backend rebuilds the tree attention from flash kernels using the
+        # (prefix_len, completion_lens) layout and needs NO BlockMask -- so skip the (expensive,
+        # O(packed_len^2)) build entirely in that mode. The flex backend needs the BlockMask.
+        use_flash_composed = sp_attention_backend() == "flash_composed"
         block_mask = (
             build_tree_block_mask(
                 prefix_len, completion_lens, hidden_states.device, padded_len=full_len
             )
-            if HAVE_FLEX_ATTENTION
+            if (HAVE_FLEX_ATTENTION and not use_flash_composed)
             else None
         )
+        # Run the shared-prefix attention kernel (flex BlockMask or flash-composed) when either a
+        # BlockMask was built or the flash-composed layout is available.
+        use_sp_kernel = block_mask is not None or use_flash_composed
+        sp_layout = (prefix_len, completion_lens)
         for layer in self.layers:
             if isinstance(layer.self_attention, IdentityOp):
                 # MLP/MoE-only block (no attention): stateless on the packed sequence.
                 hidden_states = layer(
                     hidden_states=hidden_states, attention_mask=attention_mask
                 )
-            elif block_mask is not None:
-                # FlexAttention tree BlockMask + position-aware RoPE. _run_core_attention reads
-                # `_sp_block_mask` off the self_attention module; clear it in `finally` so the
-                # next non-SP call on the same module sees no leaked mask.
+            elif use_sp_kernel:
+                # _run_core_attention reads `_sp_block_mask` (flex) and `_sp_layout`
+                # (flash-composed) off the self_attention module; clear both in `finally` so the
+                # next non-SP call on the same module sees no leaked state.
                 layer.self_attention._sp_block_mask = block_mask
+                layer.self_attention._sp_layout = sp_layout
                 try:
                     hidden_states = layer(
                         hidden_states=hidden_states,
@@ -881,6 +891,7 @@ class TransformerBlock(GraphableMegatronModule, MegatronModule):
                     )
                 finally:
                     layer.self_attention._sp_block_mask = None
+                    layer.self_attention._sp_layout = None
             else:
                 # Dense fallback: the (T, T) tree mask + position-aware RoPE express the sharing.
                 hidden_states = layer(

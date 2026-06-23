@@ -1266,16 +1266,20 @@ class Attention(MegatronModule, ABC):
 
         nvtx_range_push(suffix="core_attention")
         sp_block_mask = getattr(self, "_sp_block_mask", None)
-        if sp_block_mask is not None:
-            # Shared-prefix ("tree") packing: run the tree-masked attention via FlexAttention
-            # (sparse BlockMask skips the fully-masked sibling-branch blocks) instead of the
-            # configured core_attention, which would need the dense O(T^2) mask -- measured ~2x
-            # slower than not sharing at all, vs flex's ~5x speedup. Intercept here so BOTH the
-            # checkpointed and non-checkpointed dispatch below are covered. Returns [sq, b, h*hn],
-            # matching the static core_attention output shape.
-            from megatron.core.models.hybrid.shared_prefix import flex_tree_attention
+        sp_layout = getattr(self, "_sp_layout", None)
+        if sp_block_mask is not None or sp_layout is not None:
+            # Shared-prefix ("tree") packing: run the tree-masked attention instead of the
+            # configured core_attention (which would need a dense O(T^2) mask). The backend is
+            # FlexAttention (sparse BlockMask) by default, or flash-composed (flash kernels +
+            # online-softmax merge, ~flash-class backward) when NRL_SP_ATTENTION_BACKEND selects
+            # it and a layout is present. Intercept here so BOTH the checkpointed and
+            # non-checkpointed dispatch below are covered. Returns [sq, b, h*hn], matching the
+            # static core_attention output shape.
+            from megatron.core.models.hybrid.shared_prefix import run_shared_prefix_attention
 
-            core_attn_out = flex_tree_attention(query, key, value, sp_block_mask)
+            core_attn_out = run_shared_prefix_attention(
+                query, key, value, block_mask=sp_block_mask, layout=sp_layout
+            )
         elif self.checkpoint_core_attention and self.training:
             core_attn_out = self._checkpointed_attention_forward(
                 query,
