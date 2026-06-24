@@ -599,52 +599,64 @@ def plan_shared_prefix_forest_bins(
     for i in range(n):
         gid = int(group_ids[i])
         lp = int(prompt_lens[i])
-        if gid < 0 or lp <= 0 or lp >= int(real_lens[i]):
+        # Ineligible (no group / prompt / completion, or a single [P+C] too big for a bin)
+        # -> block-diag/THD path. Singleton groups handled below.
+        if gid < 0 or lp <= 0 or lp >= int(real_lens[i]) or int(real_lens[i]) > bin_size:
             blockdiag_atoms.append(i)
         else:
             buckets[gid].append(i)
 
-    comp_items: List[Tuple[int, int, int, int]] = []  # (Lc, gid, Lp, traj_idx)
-    for gid, idxs in buckets.items():
-        if len(idxs) < 2:
-            blockdiag_atoms.extend(idxs)  # singleton group -> no real sharing
-            continue
-        lp = int(prompt_lens[idxs[0]])
-        for j in idxs:
-            if int(real_lens[j]) > bin_size:
-                blockdiag_atoms.append(j)  # can't even share alone -> block-diag/THD path
-            else:
-                comp_items.append((int(real_lens[j]) - lp, gid, lp, j))
-    comp_items.sort(reverse=True)  # decreasing completion length
-
     bins: List[ForestBin] = []
 
-    def _place_completion(gid: int, lp: int, traj: int) -> None:
-        best, best_rem = None, None
-        for b in bins:
-            present = gid in b.groups
-            if present and len(b.groups[gid][1]) >= max_sequences_per_bin:
-                continue  # bin already holds the max completions for this group
-            inc = (int(real_lens[traj]) - lp) + (0 if present else lp)
-            rem = bin_size - (b.used_tokens + inc)
-            if rem >= 0 and (best_rem is None or rem < best_rem):
-                best, best_rem = b, rem
-        if best is None:
-            best = ForestBin()
-            bins.append(best)
-        if gid not in best.groups:
-            best.groups[gid] = (lp, [])
-            best.used_tokens += lp
-        best.groups[gid][1].append(traj)
-        best.used_tokens += int(real_lens[traj]) - lp
+    # Compute cost = fixed completion mass + Σ_g Lp_g * (bins group g touches). The completion
+    # mass is fixed, so we minimize PROMPT DUPLICATION: keep each group's completions together
+    # so its prompt is stored once per bin it must span (the lower bound ceil(footprint/bin)).
+    # Process groups largest-footprint-first; within a group, fill the group's OWN bins before
+    # opening it in a new one (no extra prompt copy). When a group must open in a new bin, place
+    # it in the tightest partial bin that fits prompt+completion -- that costs the same one prompt
+    # copy as a fresh bin but reduces bin count (free fill).
+    def _group_footprint(idxs: List[int]) -> int:
+        lp = int(prompt_lens[idxs[0]])
+        return lp + sum(int(real_lens[j]) - lp for j in idxs)
 
-    for _lc, gid, lp, traj in comp_items:
-        _place_completion(gid, lp, traj)
+    eligible = [g for g, idxs in buckets.items() if len(idxs) >= 2]
+    for gid in sorted(eligible, key=lambda g: -_group_footprint(buckets[g])):
+        idxs = buckets[gid]
+        lp = int(prompt_lens[idxs[0]])
+        group_bins: List[int] = []  # bins (indices into `bins`) currently holding this group
+        for j in sorted(idxs, key=lambda j: -(int(real_lens[j]) - lp)):  # completions, longest first
+            lc = int(real_lens[j]) - lp
+            # 1) keep the group together: add to one of its existing bins if room + under the cap.
+            placed = False
+            for bidx in group_bins:
+                b = bins[bidx]
+                if len(b.groups[gid][1]) < max_sequences_per_bin and b.used_tokens + lc <= bin_size:
+                    b.groups[gid][1].append(j)
+                    b.used_tokens += lc
+                    placed = True
+                    break
+            if placed:
+                continue
+            # 2) open the group in the tightest OTHER bin that fits prompt+completion (free fill;
+            #    one prompt copy either way), else a fresh bin.
+            best, best_rem = None, None
+            for bidx, b in enumerate(bins):
+                if gid in b.groups:
+                    continue
+                rem = bin_size - (b.used_tokens + lp + lc)
+                if rem >= 0 and (best_rem is None or rem < best_rem):
+                    best, best_rem = bidx, rem
+            if best is None:
+                bins.append(ForestBin())
+                best = len(bins) - 1
+            bins[best].groups[gid] = (lp, [j])
+            bins[best].used_tokens += lp + lc
+            group_bins.append(best)
 
     for b in bins:  # materialize the forest layout per bin (groups in insertion order)
         sub = [
-            PackedTreeLayout.from_shared_prefix(lp, [int(real_lens[c]) - lp for c in comps])
-            for gid, (lp, comps) in b.groups.items()
+            PackedTreeLayout.from_shared_prefix(g_lp, [int(real_lens[c]) - g_lp for c in comps])
+            for _gid, (g_lp, comps) in b.groups.items()
         ]
         b.layout = PackedTreeLayout.concat(sub)
     return bins, sorted(blockdiag_atoms)
