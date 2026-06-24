@@ -839,20 +839,20 @@ class TransformerBlock(GraphableMegatronModule, MegatronModule):
         )
         from megatron.core.transformer.identity_op import IdentityOp
 
-        ctx = SharedPrefixContext(prefix_len, completion_lens)
-        # The packed sequence is padded past Lp+sum(Lc) to a tensor-parallel-divisible length
-        # (required by sequence parallelism's reduce-scatter). Trailing pad positions are causally
-        # harmless and their outputs are discarded (never in comp_positions).
-        #
         # ``packed_len`` is the FULL packed length. Under sequence parallelism the activation
         # entering this stack is sequence-sharded (length packed_len // TP); the per-layer attention
         # all-gathers it back to the full sequence before the (tree-masked) attention, so the
         # BlockMask must be sized to the FULL packed_len, not hidden_states.shape[0]. Without
         # sequence parallelism the two coincide. Fall back to the local length if not provided.
         full_len = int(packed_len) if packed_len is not None else int(hidden_states.shape[0])
-        assert full_len >= ctx.total_len, (
-            f"packed length {full_len} < Lp+sum(Lc) {ctx.total_len}"
-        )
+        # The single-group sanity check uses SharedPrefixContext (which requires prefix_len >= 1).
+        # A forest carries prefix_len=0 / completion_lens=[] (its structure is in ``forest``), so
+        # skip the ctx build/assert for it -- the packed tensor is already correctly sized.
+        if forest is None:
+            ctx = SharedPrefixContext(prefix_len, completion_lens)
+            assert full_len >= ctx.total_len, (
+                f"packed length {full_len} < Lp+sum(Lc) {ctx.total_len}"
+            )
         # Prefer FlexAttention for the tree mask: a sparse BlockMask that skips the fully-masked
         # sibling-branch blocks. Fall back to the dense `attention_mask` only if FlexAttention is
         # unavailable (torch < 2.5) or the layout couldn't build a BlockMask. Build the mask over
