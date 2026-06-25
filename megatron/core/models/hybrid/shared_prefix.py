@@ -310,13 +310,14 @@ def _forest_attention_plan(node_start, node_len, node_parent, device):
         return torch.tensor(x, dtype=torch.long, device=device)
 
     passes = []
-    # self pass: one block-diagonal causal varlen over every node's own span.
+    # self pass: one block-diagonal causal varlen over every node's own span. Its q/k indices are the
+    # identity over [0, total), so they are left as ``None`` -- the kernel then uses q/k/v directly and
+    # skips a full-tensor gather/scatter every forward and backward (a real cost on big packed bins).
     cu = [0]
     for i in range(N):
         cu.append(cu[-1] + nl[i])
     mnl = max(nl, default=0)
-    passes.append((torch.arange(total, device=device), torch.arange(total, device=device),
-                   _i32(cu), _i32(cu), mnl, mnl, True))
+    passes.append((None, None, _i32(cu), _i32(cu), mnl, mnl, True))
 
     # cross passes: one per ancestor depth level.
     for L in range(d_max):
@@ -364,9 +365,12 @@ class _ComposedForestAttn(torch.autograd.Function):
         np_, hn = q.shape[1], q.shape[2]
         outs, lses = [], []
         for q_idx, k_idx, cu_q, cu_k, mxq, mxk, causal in passes:
+            qx = q if q_idx is None else q.index_select(0, q_idx)  # q_idx None => identity (self pass)
+            kx = k if k_idx is None else k.index_select(0, k_idx)
+            vx = v if k_idx is None else v.index_select(0, k_idx)
             o, lse, _ = flash_attn_varlen_func(
-                q.index_select(0, q_idx), k.index_select(0, k_idx), v.index_select(0, k_idx),
-                cu_q, cu_k, mxq, mxk, softmax_scale=scale, causal=causal, return_attn_probs=True,
+                qx, kx, vx, cu_q, cu_k, mxq, mxk,
+                softmax_scale=scale, causal=causal, return_attn_probs=True,
             )  # o [Σq, np, hn], lse [np, Σq]
             outs.append(o)
             lses.append(lse)
@@ -374,12 +378,19 @@ class _ComposedForestAttn(torch.autograd.Function):
         # merged LSE per (head, token): logsumexp over every pass the token queries in.
         lse_final = torch.full((np_, total), float("-inf"), device=q.device, dtype=torch.float32)
         for (q_idx, *_), lse in zip(passes, lses):
-            lse_final[:, q_idx] = torch.logaddexp(lse_final[:, q_idx], lse.float())
+            if q_idx is None:
+                lse_final = torch.logaddexp(lse_final, lse.float())
+            else:
+                lse_final[:, q_idx] = torch.logaddexp(lse_final[:, q_idx], lse.float())
         # merged output: sum_pass w_pass * o_pass, w_pass = exp(lse_pass - lse_final).
         o_merged = torch.zeros(total, np_, hn, device=q.device, dtype=torch.float32)
         for (q_idx, *_), o, lse in zip(passes, outs, lses):
-            w = torch.exp(lse.float() - lse_final.index_select(1, q_idx))  # [np, Σq]
-            o_merged.index_add_(0, q_idx, w.transpose(0, 1).unsqueeze(-1) * o.float())
+            lf = lse_final if q_idx is None else lse_final.index_select(1, q_idx)
+            contrib = torch.exp(lse.float() - lf).transpose(0, 1).unsqueeze(-1) * o.float()
+            if q_idx is None:
+                o_merged = o_merged + contrib
+            else:
+                o_merged.index_add_(0, q_idx, contrib)
         o_merged = o_merged.to(q.dtype)
 
         ctx.save_for_backward(q, k, v, o_merged)
@@ -400,20 +411,28 @@ class _ComposedForestAttn(torch.autograd.Function):
         dk = torch.zeros(k.shape, device=k.device, dtype=torch.float32)
         dv = torch.zeros(v.shape, device=v.device, dtype=torch.float32)
         for (q_idx, k_idx, cu_q, cu_k, mxq, mxk, causal), lse in zip(ctx.passes, ctx.lses):
-            qx = q.index_select(0, q_idx)
-            kx = k.index_select(0, k_idx)
-            vx = v.index_select(0, k_idx)
-            ox = o_merged.index_select(0, q_idx)  # MERGED output -> exact normalizer (the fix)
-            w = torch.exp(lse.float() - lse_final.index_select(1, q_idx))  # [np, Σq]
-            dox = (w.transpose(0, 1).unsqueeze(-1) * do.index_select(0, q_idx)).to(q.dtype)
+            qx = q if q_idx is None else q.index_select(0, q_idx)  # q_idx None => identity (self pass)
+            kx = k if k_idx is None else k.index_select(0, k_idx)
+            vx = v if k_idx is None else v.index_select(0, k_idx)
+            ox = o_merged if q_idx is None else o_merged.index_select(0, q_idx)  # MERGED output -> exact
+            lf = lse_final if q_idx is None else lse_final.index_select(1, q_idx)
+            dox_full = do if q_idx is None else do.index_select(0, q_idx)
+            dox = (torch.exp(lse.float() - lf).transpose(0, 1).unsqueeze(-1) * dox_full).to(q.dtype)
             dqx, dkx, dvx = torch.empty_like(qx), torch.empty_like(kx), torch.empty_like(vx)
             _flash_attn_varlen_backward(
                 dox, qx, kx, vx, ox, lse, dqx, dkx, dvx, cu_q, cu_k, mxq, mxk,
                 0.0, scale, causal, -1, -1, 0.0, None, False, None, False,
             )
-            dq.index_add_(0, q_idx, dqx.float())
-            dk.index_add_(0, k_idx, dkx.float())
-            dv.index_add_(0, k_idx, dvx.float())
+            if q_idx is None:
+                dq += dqx.float()
+            else:
+                dq.index_add_(0, q_idx, dqx.float())
+            if k_idx is None:
+                dk += dkx.float()
+                dv += dvx.float()
+            else:
+                dk.index_add_(0, k_idx, dkx.float())
+                dv.index_add_(0, k_idx, dvx.float())
         return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), None, None, None, None
 
 
