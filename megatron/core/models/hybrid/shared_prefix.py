@@ -271,18 +271,217 @@ def flash_composed_tree_attention(query, key, value, prefix_len, completion_lens
     return out.reshape(sq, 1, np_ * hn).contiguous()   # [sq, b, np*hn]
 
 
+def _forest_attention_plan(node_start, node_len, node_parent, device):
+    """Decompose a forest/tree into the flash passes the composed attention runs.
+
+    Returns ``(total, passes)`` where ``passes`` is a list of
+    ``(q_idx, k_idx, cu_q, cu_k, max_q, max_k, causal)``:
+      * one SELF pass -- every node attends its own span causally (block-diagonal varlen over all
+        tokens), and
+      * one CROSS pass per ancestor depth level L -- tokens strictly below depth L attend their
+        level-L ancestor span, non-causally (DFS contiguity makes each ancestor's descendant tokens
+        a contiguous run).
+    A token attends ``{own node, causal} ∪ {each ancestor node, full}`` -- the union of the passes it
+    appears in as a query. ``max_depth + 1`` passes total, independent of group count: depth-1 forest
+    (stars) ⇒ self + 1 cross; arbitrary-depth trees ⇒ ``depth + 1``. ``node_*`` give the structure
+    (parents precede children; a subtree is a contiguous DFS run).
+    """
+    ns = [int(x) for x in node_start]
+    nl = [int(x) for x in node_len]
+    par = [int(x) for x in node_parent]
+    N = len(ns)
+    total = max((ns[i] + nl[i] for i in range(N)), default=0)
+
+    depth = [0] * N
+    for i in range(N):
+        depth[i] = 0 if par[i] == -1 else depth[par[i]] + 1
+    d_max = max(depth, default=-1)
+    subtree_end = [ns[i] + nl[i] for i in range(N)]
+    for i in range(N):
+        j = i + 1
+        while j < N and depth[j] > depth[i]:
+            subtree_end[i] = ns[j] + nl[j]
+            j += 1
+
+    def _i32(x):
+        return torch.tensor(x, dtype=torch.int32, device=device)
+
+    def _i64(x):
+        return torch.tensor(x, dtype=torch.long, device=device)
+
+    passes = []
+    # self pass: one block-diagonal causal varlen over every node's own span.
+    cu = [0]
+    for i in range(N):
+        cu.append(cu[-1] + nl[i])
+    mnl = max(nl, default=0)
+    passes.append((torch.arange(total, device=device), torch.arange(total, device=device),
+                   _i32(cu), _i32(cu), mnl, mnl, True))
+
+    # cross passes: one per ancestor depth level.
+    for L in range(d_max):
+        qpos: List[int] = []
+        kpos: List[int] = []
+        cuq, cuk = [0], [0]
+        for a in range(N):
+            if depth[a] != L:
+                continue
+            qs, qe = ns[a] + nl[a], subtree_end[a]  # strict descendants of a (contiguous, DFS)
+            if qe <= qs:
+                continue
+            qpos.extend(range(qs, qe))
+            kpos.extend(range(ns[a], ns[a] + nl[a]))
+            cuq.append(cuq[-1] + (qe - qs))
+            cuk.append(cuk[-1] + nl[a])
+        if not qpos:
+            continue
+        mxq = max(cuq[i + 1] - cuq[i] for i in range(len(cuq) - 1))
+        mxk = max(cuk[i + 1] - cuk[i] for i in range(len(cuk) - 1))
+        passes.append((_i64(qpos), _i64(kpos), _i32(cuq), _i32(cuk), mxq, mxk, False))
+    return total, passes
+
+
+class _ComposedForestAttn(torch.autograd.Function):
+    """Composed forest/tree attention with an EXACT backward.
+
+    The forward runs the ``_forest_attention_plan`` passes with flash and merges them by online
+    softmax (LSE) -- the union-softmax identity, so the forward is exact. The backward is the
+    delicate part: each pass's flash output is a sub-attention, and the *naive* autograd-through-flash
+    drops the inter-pass normalizer-coupling term (flash exposes no gradient through its LSE), giving
+    ~15% wrong q/k grads. We fix it by calling the low-level ``_flash_attn_varlen_backward`` per pass
+    with ``dout = w_pass * do`` AND substituting the MERGED output ``o`` for the pass's own output:
+    flash uses ``out`` only to form the row-delta ``D = rowsum(dout ∘ out)``, which is exactly the
+    softmax ``G`` term, so feeding the merged ``o`` injects the global normalizer that was missing.
+    The result is the exact union-softmax score gradient ``P_ij (v_j·do − o·do)`` for every pass --
+    dq, dk, dv all correct -- with no custom kernel (see TREE_PACKING_DESIGN.md §5)."""
+
+    @staticmethod
+    def forward(ctx, q, k, v, node_start, node_len, node_parent, scale):
+        # q: [total, np, hn]; k, v: [total, ng, hn]; scale already resolved to a float.
+        from flash_attn import flash_attn_varlen_func
+
+        total, passes = _forest_attention_plan(node_start, node_len, node_parent, q.device)
+        np_, hn = q.shape[1], q.shape[2]
+        outs, lses = [], []
+        for q_idx, k_idx, cu_q, cu_k, mxq, mxk, causal in passes:
+            o, lse, _ = flash_attn_varlen_func(
+                q.index_select(0, q_idx), k.index_select(0, k_idx), v.index_select(0, k_idx),
+                cu_q, cu_k, mxq, mxk, softmax_scale=scale, causal=causal, return_attn_probs=True,
+            )  # o [Σq, np, hn], lse [np, Σq]
+            outs.append(o)
+            lses.append(lse)
+
+        # merged LSE per (head, token): logsumexp over every pass the token queries in.
+        lse_final = torch.full((np_, total), float("-inf"), device=q.device, dtype=torch.float32)
+        for (q_idx, *_), lse in zip(passes, lses):
+            lse_final[:, q_idx] = torch.logaddexp(lse_final[:, q_idx], lse.float())
+        # merged output: sum_pass w_pass * o_pass, w_pass = exp(lse_pass - lse_final).
+        o_merged = torch.zeros(total, np_, hn, device=q.device, dtype=torch.float32)
+        for (q_idx, *_), o, lse in zip(passes, outs, lses):
+            w = torch.exp(lse.float() - lse_final.index_select(1, q_idx))  # [np, Σq]
+            o_merged.index_add_(0, q_idx, w.transpose(0, 1).unsqueeze(-1) * o.float())
+        o_merged = o_merged.to(q.dtype)
+
+        ctx.save_for_backward(q, k, v, o_merged)
+        ctx.passes = passes
+        ctx.lses = lses
+        ctx.lse_final = lse_final
+        ctx.scale = scale
+        return o_merged
+
+    @staticmethod
+    def backward(ctx, do):
+        from flash_attn.flash_attn_interface import _flash_attn_varlen_backward
+
+        q, k, v, o_merged = ctx.saved_tensors
+        lse_final, scale = ctx.lse_final, ctx.scale
+        do = do.contiguous()
+        dq = torch.zeros(q.shape, device=q.device, dtype=torch.float32)
+        dk = torch.zeros(k.shape, device=k.device, dtype=torch.float32)
+        dv = torch.zeros(v.shape, device=v.device, dtype=torch.float32)
+        for (q_idx, k_idx, cu_q, cu_k, mxq, mxk, causal), lse in zip(ctx.passes, ctx.lses):
+            qx = q.index_select(0, q_idx)
+            kx = k.index_select(0, k_idx)
+            vx = v.index_select(0, k_idx)
+            ox = o_merged.index_select(0, q_idx)  # MERGED output -> exact normalizer (the fix)
+            w = torch.exp(lse.float() - lse_final.index_select(1, q_idx))  # [np, Σq]
+            dox = (w.transpose(0, 1).unsqueeze(-1) * do.index_select(0, q_idx)).to(q.dtype)
+            dqx, dkx, dvx = torch.empty_like(qx), torch.empty_like(kx), torch.empty_like(vx)
+            _flash_attn_varlen_backward(
+                dox, qx, kx, vx, ox, lse, dqx, dkx, dvx, cu_q, cu_k, mxq, mxk,
+                0.0, scale, causal, -1, -1, 0.0, None, False, None, False,
+            )
+            dq.index_add_(0, q_idx, dqx.float())
+            dk.index_add_(0, k_idx, dkx.float())
+            dv.index_add_(0, k_idx, dvx.float())
+        return dq.to(q.dtype), dk.to(k.dtype), dv.to(v.dtype), None, None, None, None
+
+
+def flash_composed_forest_attention_fused(query, key, value, node_start, node_len, node_parent, scale=None):
+    """Level-decomposed forest/tree attention, fused to ``max_depth + 1`` flash passes per bin.
+
+    A token attends ``{its own node, causally} ∪ {each ancestor node, fully}``. Decomposed by ancestor
+    depth level (see :func:`_forest_attention_plan`) and merged by online softmax, so cost is
+    independent of group count (depth-1 stars ⇒ 1 self + 1 cross pass) -- vs the per-group loop's
+    ``~3 * #groups`` launches. Forward AND backward are exact via :class:`_ComposedForestAttn`.
+
+    ``query`` is ``[sq, b, np, hn]`` and ``key``/``value`` ``[sq, b, ng, hn]`` (b == 1). Trailing pad
+    positions (beyond the last node) get zero outputs and are never read downstream. Returns
+    ``[sq, b, np*hn]``; same default scale (1/sqrt(hn)) as the flex/loop paths.
+    """
+    sq, b, np_, hn = query.shape
+    assert b == 1, "shared-prefix packing uses a single packed sequence (b == 1)"
+    total = max((int(s) + int(l) for s, l in zip(node_start, node_len)), default=0)
+    scale = scale if scale is not None else hn ** -0.5
+    out = _ComposedForestAttn.apply(
+        query[:total, 0], key[:total, 0], value[:total, 0], node_start, node_len, node_parent, scale
+    )  # [total, np, hn]
+    if sq > total:
+        out = torch.cat([out, out.new_zeros(sq - total, np_, hn)], dim=0)
+    return out.reshape(sq, 1, np_ * hn).contiguous()
+
+
+def _forest_to_nodes(forest):
+    """Expand a depth-1 ``forest`` list into flat node arrays (PackedTreeLayout structure).
+
+    ``forest`` is ``[(token_offset, prefix_len, completion_lens), ...]``. Each group becomes a root
+    node (the prefix span, parent -1) followed by one child node per completion. Node order is DFS
+    (root then its children), as the fused kernel requires.
+    """
+    node_start, node_len, node_parent = [], [], []
+    for off, prefix_len, completion_lens in forest:
+        root = len(node_start)
+        node_start.append(int(off)); node_len.append(int(prefix_len)); node_parent.append(-1)
+        pos = int(off) + int(prefix_len)
+        for c in completion_lens:
+            node_start.append(pos); node_len.append(int(c)); node_parent.append(root)
+            pos += int(c)
+    return node_start, node_len, node_parent
+
+
 def flash_composed_forest_attention(query, key, value, forest, scale=None):
-    """Forest (multi-group / Case-1) shared-prefix attention.
+    """Forest (multi-group / Case-1) shared-prefix attention -- fused, level-decomposed.
 
     ``forest`` is a list of ``(token_offset, prefix_len, completion_lens)``, one per group packed
-    into this bin. Groups are block-diagonal (a token never attends another group), so the forest
-    forward is just the validated single-group :func:`flash_composed_tree_attention` applied to
-    each group's contiguous slice, written back into the packed output. Trailing pad positions
-    (beyond the last group) are zero. (A single multi-segment ``cu_seqlens`` call would fuse the
-    groups into one kernel launch -- a later perf optimization; this is the correctness-first form.
+    into this bin. Expanded to flat node arrays and dispatched to
+    :func:`flash_composed_forest_attention_fused`, which fuses ALL groups into ``max_depth + 1``
+    flash calls (depth-1 forest -> 1 self + 1 cross + merge) regardless of group count -- vs the
+    old per-group loop's ``~3 * #groups`` launches, which scaled badly with many small groups.
+    See :func:`flash_composed_forest_attention_loop` for the reference per-group form (kept for
+    parity testing).
+    """
+    node_start, node_len, node_parent = _forest_to_nodes(forest)
+    return flash_composed_forest_attention_fused(
+        query, key, value, node_start, node_len, node_parent, scale=scale
+    )
 
-    Generalizes the depth-1 forest now; arbitrary-depth trees (Case 2) extend the per-group call,
-    not this loop.)
+
+def flash_composed_forest_attention_loop(query, key, value, forest, scale=None):
+    """Reference per-group forest attention (correctness baseline for the fused kernel).
+
+    Groups are block-diagonal (a token never attends another group), so this just applies the
+    validated single-group :func:`flash_composed_tree_attention` to each group's contiguous slice.
+    Correct but launches ``~3 * #groups`` kernels; superseded by the fused path in production.
     """
     sq, b, np_, hn = query.shape
     assert b == 1, "shared-prefix packing uses a single packed sequence (b == 1)"
