@@ -515,16 +515,22 @@ def flash_composed_forest_attention_loop(query, key, value, forest, scale=None):
     return out.reshape(sq, 1, np_ * hn).contiguous()
 
 
-def run_shared_prefix_attention(query, key, value, *, block_mask, layout=None, forest=None, scale=None):
+def run_shared_prefix_attention(
+    query, key, value, *, block_mask, layout=None, forest=None, node_layout=None, scale=None
+):
     """Dispatch shared-prefix attention to the selected backend.
 
+    ``node_layout`` (a ``(node_start, node_len, node_parent)`` triple) selects the depth-general
+    tree path (Case 2): an arbitrary-depth packed tree fed straight to the fused kernel.
     ``forest`` (a list of per-group ``(offset, prefix_len, completion_lens)``) selects the
-    multi-group Case-1 path; ``layout`` (a single ``(prefix_len, completion_lens)``) is the
-    one-group path. Both require ``flash_composed`` + a layout; the hybrid path supplies only
-    ``block_mask`` (no layout/forest) and always takes the flex path (warned once).
+    multi-group depth-1 Case-1 path; ``layout`` (a single ``(prefix_len, completion_lens)``) is the
+    one-group path. All require ``flash_composed``; the hybrid path supplies only ``block_mask``
+    (no layout/forest/node_layout) and always takes the flex path (warned once).
     """
     global _SP_FALLBACK_WARNED
     if sp_attention_backend() == "flash_composed":
+        if node_layout is not None:
+            return flash_composed_forest_attention_fused(query, key, value, *node_layout, scale=scale)
         if forest is not None:
             return flash_composed_forest_attention(query, key, value, forest, scale=scale)
         if layout is not None:
@@ -565,6 +571,10 @@ class SharedPrefixParams:
     # completion_lens)``. When set, the forward uses the forest attention (groups are
     # block-diagonal) instead of the single-group ``prefix_len``/``completion_lens`` above.
     forest: Optional[List[tuple]] = None
+    # Case-2 arbitrary-depth tree bin: a ``(node_start, node_len, node_parent)`` triple (the
+    # PackedTreeLayout node arrays) fed straight to the depth-general fused kernel. Supersedes
+    # ``forest`` (a depth-1 forest is just a tree of stars); when set it takes precedence.
+    node_layout: Optional[tuple] = None
 
     @property
     def total_len(self) -> int:

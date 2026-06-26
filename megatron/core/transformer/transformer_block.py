@@ -805,6 +805,7 @@ class TransformerBlock(GraphableMegatronModule, MegatronModule):
         rotary_pos_emb: Optional[Tensor] = None,
         packed_len: Optional[int] = None,
         forest=None,
+        node_layout=None,
     ):
         """Shared-prefix ("tree") packed forward for a dense (attention-only) decoder stack.
 
@@ -846,9 +847,10 @@ class TransformerBlock(GraphableMegatronModule, MegatronModule):
         # sequence parallelism the two coincide. Fall back to the local length if not provided.
         full_len = int(packed_len) if packed_len is not None else int(hidden_states.shape[0])
         # The single-group sanity check uses SharedPrefixContext (which requires prefix_len >= 1).
-        # A forest carries prefix_len=0 / completion_lens=[] (its structure is in ``forest``), so
-        # skip the ctx build/assert for it -- the packed tensor is already correctly sized.
-        if forest is None:
+        # A forest / depth-general tree carries prefix_len=0 / completion_lens=[] (its structure is
+        # in ``forest`` / ``node_layout``), so skip the ctx build/assert for those -- the packed
+        # tensor is already correctly sized.
+        if forest is None and node_layout is None:
             ctx = SharedPrefixContext(prefix_len, completion_lens)
             assert full_len >= ctx.total_len, (
                 f"packed length {full_len} < Lp+sum(Lc) {ctx.total_len}"
@@ -864,17 +866,20 @@ class TransformerBlock(GraphableMegatronModule, MegatronModule):
         # Case-1 forest (multiple groups per bin): flash-composed only, no BlockMask -- each group
         # is block-diagonal and handled by flash_composed_forest_attention via ``_sp_forest``.
         is_forest = forest is not None
+        # Case-2 depth-general tree: flash-composed only, no BlockMask -- the node arrays drive the
+        # fused kernel directly via ``_sp_node_layout``.
+        is_tree = node_layout is not None
         block_mask = (
             build_tree_block_mask(
                 prefix_len, completion_lens, hidden_states.device, padded_len=full_len
             )
-            if (HAVE_FLEX_ATTENTION and not use_flash_composed and not is_forest)
+            if (HAVE_FLEX_ATTENTION and not use_flash_composed and not is_forest and not is_tree)
             else None
         )
         # Run the shared-prefix attention kernel when a BlockMask was built, the flash-composed
-        # single-group layout applies, or a forest is present.
-        use_sp_kernel = block_mask is not None or use_flash_composed or is_forest
-        sp_layout = None if is_forest else (prefix_len, completion_lens)
+        # single-group layout applies, or a forest / tree is present.
+        use_sp_kernel = block_mask is not None or use_flash_composed or is_forest or is_tree
+        sp_layout = None if (is_forest or is_tree) else (prefix_len, completion_lens)
         for layer in self.layers:
             if isinstance(layer.self_attention, IdentityOp):
                 # MLP/MoE-only block (no attention): stateless on the packed sequence.
@@ -888,6 +893,7 @@ class TransformerBlock(GraphableMegatronModule, MegatronModule):
                 layer.self_attention._sp_block_mask = block_mask
                 layer.self_attention._sp_layout = sp_layout
                 layer.self_attention._sp_forest = forest
+                layer.self_attention._sp_node_layout = node_layout
                 try:
                     hidden_states = layer(
                         hidden_states=hidden_states,
@@ -898,6 +904,7 @@ class TransformerBlock(GraphableMegatronModule, MegatronModule):
                     layer.self_attention._sp_block_mask = None
                     layer.self_attention._sp_layout = None
                     layer.self_attention._sp_forest = None
+                    layer.self_attention._sp_node_layout = None
             else:
                 # Dense fallback: the (T, T) tree mask + position-aware RoPE express the sharing.
                 hidden_states = layer(

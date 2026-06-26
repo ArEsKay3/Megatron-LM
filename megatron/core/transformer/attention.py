@@ -1268,7 +1268,13 @@ class Attention(MegatronModule, ABC):
         sp_block_mask = getattr(self, "_sp_block_mask", None)
         sp_layout = getattr(self, "_sp_layout", None)
         sp_forest = getattr(self, "_sp_forest", None)
-        if sp_block_mask is not None or sp_layout is not None or sp_forest is not None:
+        sp_node_layout = getattr(self, "_sp_node_layout", None)
+        if (
+            sp_block_mask is not None
+            or sp_layout is not None
+            or sp_forest is not None
+            or sp_node_layout is not None
+        ):
             # Shared-prefix ("tree") packing: run the tree-masked attention instead of the
             # configured core_attention (which would need a dense O(T^2) mask). The backend is
             # FlexAttention (sparse BlockMask) by default, or flash-composed (flash kernels +
@@ -1279,7 +1285,8 @@ class Attention(MegatronModule, ABC):
             from megatron.core.models.hybrid.shared_prefix import run_shared_prefix_attention
 
             core_attn_out = run_shared_prefix_attention(
-                query, key, value, block_mask=sp_block_mask, layout=sp_layout, forest=sp_forest
+                query, key, value, block_mask=sp_block_mask, layout=sp_layout,
+                forest=sp_forest, node_layout=sp_node_layout,
             )
         elif self.checkpoint_core_attention and self.training:
             core_attn_out = self._checkpointed_attention_forward(

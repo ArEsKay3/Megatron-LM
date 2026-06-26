@@ -598,6 +598,7 @@ class GPTModel(LanguageModule):
                 rotary_pos_emb=rotary_pos_emb,
                 packed_len=shared_prefix_params.packed_len,
                 forest=shared_prefix_params.forest,
+                node_layout=shared_prefix_params.node_layout,
             )
         else:
             hidden_states = self.decoder(
