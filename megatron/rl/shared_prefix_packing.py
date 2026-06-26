@@ -183,6 +183,59 @@ def build_forest_layout(layout: "PackedTreeLayout", device="cpu") -> ForestLayou
     )
 
 
+@dataclass
+class TreeLayout:
+    """Arbitrary-depth packed-tree descriptor for the Megatron forward (Case 2).
+
+    The depth-general successor to :class:`ForestLayout`. It carries the raw node arrays the
+    fused tree kernel consumes directly (``flash_composed_forest_attention_fused``) plus the
+    three per-token tensors the forward needs, all read from the (already depth-general)
+    :class:`PackedTreeLayout` views:
+
+      * ``position_ids``  -- prefix-continued RoPE (a child continues from where its parent ended);
+      * ``prev_positions``-- the fan-out logprob map: index whose next-token logit predicts each
+        token (a node's first token is predicted from its PARENT's last token; ``-1`` for a root's
+        first token, which has no predecessor);
+      * ``segment_ids``   -- node id per token (for the flex fallback / masking / debugging).
+
+    Unlike :class:`ForestLayout` it makes NO depth-1 assumption: there is no "completion / branch ==
+    direct child of a root" notion. The loss/logprob consumer works per packed token using
+    ``prev_positions`` (a token carries loss iff the data-side ``loss_mask`` says so), which reduces
+    to the depth-1 fan-out when the tree is a forest of stars.
+    """
+
+    total_len: int
+    node_start: List[int]
+    node_len: List[int]
+    node_parent: List[int]
+    position_ids: torch.Tensor      # [total_len]
+    prev_positions: torch.Tensor    # [total_len] (-1 where no predecessor)
+    segment_ids: torch.Tensor       # [total_len] node id per token
+
+
+def build_tree_layout(layout: "PackedTreeLayout", device="cpu") -> TreeLayout:
+    """Build a depth-general :class:`TreeLayout` from any :class:`PackedTreeLayout`.
+
+    Works for arbitrary-depth trees (the branched-MC seed-spine-plus-branches shape) and reduces
+    to the depth-1 forest case. Every per-token tensor comes straight from the depth-general
+    ``PackedTreeLayout`` views, so there is no per-shape special casing; the node arrays pass
+    through unchanged for the fused kernel.
+    """
+
+    def _t(xs: List[int]) -> torch.Tensor:
+        return torch.tensor(xs, dtype=torch.long, device=device)
+
+    return TreeLayout(
+        total_len=layout.total_len,
+        node_start=[int(x) for x in layout.node_start],
+        node_len=[int(x) for x in layout.node_len],
+        node_parent=[int(x) for x in layout.node_parent],
+        position_ids=_t(layout.position_ids()),
+        prev_positions=_t(layout.prev_token_index()),
+        segment_ids=_t(layout.segment_ids()),
+    )
+
+
 def dense_tree_mask(layout: SharedPrefixLayout, device=None) -> torch.Tensor:
     """Return a ``[total_len, total_len]`` boolean ``allowed[q, k]`` mask.
 
