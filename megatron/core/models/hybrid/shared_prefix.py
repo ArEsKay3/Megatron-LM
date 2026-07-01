@@ -292,6 +292,27 @@ def _forest_attention_plan(node_start, node_len, node_parent, device):
     N = len(ns)
     total = max((ns[i] + nl[i] for i in range(N)), default=0)
 
+    # PRECONDITION: node arrays must be DFS-preorder (each node's subtree is the contiguous run
+    # immediately after it). ``subtree_end`` below relies on this -- a non-DFS layout would silently
+    # attend the WRONG ancestor spans (branches lose interior-ancestor context -> corrupt logprobs).
+    # PackedTreeLayout only checks contiguity + parent<i, which do NOT imply DFS; validate here (O(N),
+    # negligible vs attention) so a mis-ordered layout fails loudly instead of training on garbage.
+    _stack: List[int] = []
+    for i in range(N):
+        p = par[i]
+        if p == -1:
+            _stack = [i]
+            continue
+        while _stack and _stack[-1] != p:
+            _stack.pop()
+        if not _stack or _stack[-1] != p:
+            raise ValueError(
+                f"forest/tree layout is not DFS-preorder at node {i} (parent {p}): the fused tree "
+                "attention requires each node's subtree to be the contiguous run after it. "
+                "Emit nodes in DFS preorder (parent, then each child's full subtree)."
+            )
+        _stack.append(i)
+
     depth = [0] * N
     for i in range(N):
         depth[i] = 0 if par[i] == -1 else depth[par[i]] + 1

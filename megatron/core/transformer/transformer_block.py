@@ -880,6 +880,22 @@ class TransformerBlock(GraphableMegatronModule, MegatronModule):
         # single-group layout applies, or a forest / tree is present.
         use_sp_kernel = block_mask is not None or use_flash_composed or is_forest or is_tree
         sp_layout = None if (is_forest or is_tree) else (prefix_len, completion_lens)
+        # GUARD: a forest/tree bin carries its structure ONLY in ``node_layout``/``forest``, which
+        # the flex backend does NOT consume -- flex needs a BlockMask, and none is built above for
+        # forest/tree (``block_mask`` is None). ``run_shared_prefix_attention`` on a non-flash_composed
+        # backend then calls ``flex_tree_attention(..., block_mask=None)`` == DENSE attention over the
+        # whole packed forest, so every token attends unrelated branches/siblings/co-packed trees ->
+        # uniformly corrupt logits with NO error. The forest/tree paths are only wired for
+        # flash_composed. Fail loudly instead of silently corrupting.
+        if (is_forest or is_tree) and not use_flash_composed:
+            raise RuntimeError(
+                "shared-prefix "
+                + ("forest" if is_forest else "tree")
+                + " packing requires NRL_SP_ATTENTION_BACKEND=flash_composed: the flex backend has "
+                "no BlockMask for it and would silently run DENSE attention over the packed forest "
+                "(corrupt logprobs). Set NRL_SP_ATTENTION_BACKEND=flash_composed, or build a "
+                "node_layout-derived tree BlockMask for the flex path."
+            )
         for layer in self.layers:
             if isinstance(layer.self_attention, IdentityOp):
                 # MLP/MoE-only block (no attention): stateless on the packed sequence.
