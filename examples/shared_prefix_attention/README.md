@@ -18,11 +18,13 @@ python examples/shared_prefix_attention/bench_tree_kernel.py --shapes branched_m
 ## Example output (GB300, bf16, iters=8)
 
 ```
-# device=NVIDIA GB300 dtype=bf16 heads=32 kv_heads=8 head_dim=128 iters=8
-       shape   nodes    rows   depth  tree_tok  base_tok    dup  fused_ms   bd_ms  per_tok_ovh  net_speedup  maxdiff_flex
- balanced_d4      31      16       4     16384     49152   3.00     19.89   13.38        4.46x        0.67x       3.9e-03
- branched_mc      15       9       6     24512     32608   1.33     24.71   10.70        3.07x        0.43x       3.9e-03
+# GB300, bf16, iters=8    (ovh=per_tok_ovh, net=net_speedup, Δflex=maxdiff_flex)
+       shape  depth  tree_tok  base_tok   dup  fused_ms  bd_ms    ovh    net  Δflex
+ balanced_d4      4     16384     49152  3.00     19.89  13.38  4.46x  0.67x   4e-3
+ branched_mc      6     24512     32608  1.33     24.71  10.70  3.07x  0.43x   4e-3
 ```
+
+(The tool also prints `nodes` and `rows` per shape; trimmed here for width.)
 
 Reading it: the fused tree kernel is exact (`maxdiff_flex` ~4e-3, bf16 rounding) but currently
 **slower on attention** than block-diagonal flash — `net_speedup` 0.43x on the branched-MC shape
