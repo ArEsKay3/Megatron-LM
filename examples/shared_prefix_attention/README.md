@@ -26,12 +26,16 @@ For each tree SHAPE, on identical work (the same leaf trajectories):
 
 Reported (fwd+bwd, best-of-N):
 
-| column | meaning |
-|---|---|
-| `dup` | `base_tokens / tree_tokens` — token reduction from prefix sharing |
-| `per_tok_ovh` | `(fused_ms/tree_tok) / (bd_ms/base_tok)` — the **kernel penalty** to drive toward 1.0 |
-| `net_speedup` | `bd_ms / fused_ms` == `dup / per_tok_ovh` — the bottom line (>1 ⇒ tree wins on attention) |
-| `max|Δflex|` | exactness gate: fused vs FlexAttention tree mask (bf16 ⇒ ~1e-2). MUST stay small. |
+| column | role | meaning |
+|---|---|---|
+| `net_speedup` | **VERDICT** | `bd_ms / fused_ms` — total fwd+bwd time for the SAME trajectories, tree vs block-diag. >1 ⇒ tree wins on attention. This is the final comparison point. |
+| `per_tok_ovh` | kernel target | `(fused_ms/tree_tok) / (bd_ms/base_tok)` — size-independent kernel penalty; drive it toward 1.0 (this is what `net` improves through). |
+| `dup` | context | `base_tokens / tree_tokens` — token reduction from prefix sharing. `net == dup / per_tok_ovh`. |
+| `max|Δflex|` | correctness | fused vs FlexAttention tree mask (bf16 ⇒ ~1e-2). MUST stay small — optimizations must preserve exactness. |
+
+The **verdict is `net_speedup` (raw fwd+bwd wall-time ratio)**, not per-token time. Per-token only
+appears in `--sweep`, to prove the linear regime that makes comparing two different-sized bins by
+their totals valid — and as the size-independent target the kernel optimization drives down.
 
 **Throughput model:** shared-prefix packing wins on attention iff `dup > per_tok_overhead`.
 The fused kernel does *fewer* attention FLOPs than the expanded baseline, so the overhead is the
