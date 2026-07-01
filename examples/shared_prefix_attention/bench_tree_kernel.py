@@ -307,7 +307,7 @@ def main() -> int:
         return 0
 
     hdr = ["shape", "nodes", "rows", "depth", "tree_tok", "base_tok", "dup",
-           "fused_ms", "bd_ms", "per_tok_ovh", "net_speedup", "max|Δflex|"]
+           "fused_ms", "bd_ms", "per_tok_ovh", "net_speedup", "maxdiff_flex"]
     print("  ".join(f"{c:>12}" for c in hdr))
     for nm in shapes:
         r = measure(sp, nm, SHAPES[nm], args.iters, args.warmup, dev, dt)

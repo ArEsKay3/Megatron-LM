@@ -15,6 +15,22 @@ python examples/shared_prefix_attention/bench_tree_kernel.py
 python examples/shared_prefix_attention/bench_tree_kernel.py --shapes branched_mc --iters 16
 ```
 
+## Example output (GB300, bf16, iters=8)
+
+```
+# device=NVIDIA GB300 dtype=bf16 heads=32 kv_heads=8 head_dim=128 iters=8
+       shape   nodes    rows   depth  tree_tok  base_tok    dup  fused_ms   bd_ms  per_tok_ovh  net_speedup  maxdiff_flex
+ balanced_d4      31      16       4     16384     49152   3.00     19.89   13.38        4.46x        0.67x       3.9e-03
+ branched_mc      15       9       6     24512     32608   1.33     24.71   10.70        3.07x        0.43x       3.9e-03
+```
+
+Reading it: the fused tree kernel is exact (`maxdiff_flex` ~4e-3, bf16 rounding) but currently
+**slower on attention** than block-diagonal flash — `net_speedup` 0.43x on the branched-MC shape
+(≈2.3x slower), because the ~3.1x per-token kernel penalty outweighs the 1.33x token reduction.
+The optimization goal is to drive `per_tok_ovh` down (toward the 2.0x guard target, ideally ~1x);
+once `per_tok_ovh < dup`, `net_speedup` crosses 1.0 and the tree wins on attention. (Numbers move
+with GPU/flash version and shape; regenerate before drawing conclusions.)
+
 ## What it measures
 
 For each tree SHAPE, on identical work (the same leaf trajectories):
@@ -31,7 +47,7 @@ Reported (fwd+bwd, best-of-N):
 | `net_speedup` | **VERDICT** | `bd_ms / fused_ms` — total fwd+bwd time for the SAME trajectories, tree vs block-diag. >1 ⇒ tree wins on attention. This is the final comparison point. |
 | `per_tok_ovh` | kernel target | `(fused_ms/tree_tok) / (bd_ms/base_tok)` — size-independent kernel penalty; drive it toward 1.0 (this is what `net` improves through). |
 | `dup` | context | `base_tokens / tree_tokens` — token reduction from prefix sharing. `net == dup / per_tok_ovh`. |
-| `max|Δflex|` | correctness | fused vs FlexAttention tree mask (bf16 ⇒ ~1e-2). MUST stay small — optimizations must preserve exactness. |
+| `maxdiff_flex` | correctness | max abs elementwise diff, fused output vs FlexAttention tree-mask reference (bf16 ⇒ ~1e-2). MUST stay small — optimizations must preserve exactness. |
 
 The **verdict is `net_speedup` (raw fwd+bwd wall-time ratio)**, not per-token time. Per-token only
 appears in `--sweep`, to prove the linear regime that makes comparing two different-sized bins by
@@ -75,5 +91,5 @@ no iso-bin / equal-length mode is needed — normalizing by tokens is sound.
   4 siblings forking at the root, and branches forking off seed segments. Deep but with long
   segments — representative of the live GRPO workload (dup ≈ 1.3–1.45).
 
-Any optimization MUST keep `max|Δflex|` small (exactness) — see
+Any optimization MUST keep `maxdiff_flex` small (exactness) — see
 `tests/.../test_shared_prefix_attention_parity.py` in the consuming repo for the parity gate.
