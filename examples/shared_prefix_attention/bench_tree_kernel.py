@@ -133,6 +133,23 @@ SHAPES = {
 }
 
 
+def replicate(shape, K):
+    """Replicate a shape K times into a K-tree forest (more trajectories, SAME per-tree shape).
+
+    Grows total tokens by adding trajectories -- NOT by lengthening sequences -- which is the
+    packing regime (attention time is linear in token count at fixed per-sequence length). Used by
+    --sweep to verify per-token cost is flat, so the overhead ratio is bin-size independent.
+    """
+    node_start, node_len, node_parent, _total, base_rows = shape
+    n = len(node_len)
+    nl, par = [], []
+    for r in range(K):
+        for i in range(n):
+            nl.append(node_len[i])
+            par.append(-1 if node_parent[i] == -1 else node_parent[i] + r * n)
+    return _finish([p for p in par], nl, base_rows * K)
+
+
 # --------------------------------------------------------------------------------------
 # Timing + measurement
 # --------------------------------------------------------------------------------------
@@ -179,7 +196,7 @@ def _flex_exact(sp, q, k, v, node_start, node_len, node_parent, total, dev):
     return (o_fused.float() - o_flex.float()).abs().max().item()
 
 
-def measure(sp, name, builder, iters, warmup, dev, dt):
+def measure(sp, name, builder, iters, warmup, dev, dt, check_exact=True):
     from flash_attn import flash_attn_varlen_func
 
     node_start, node_len, node_parent, total, base_rows = builder()
@@ -192,11 +209,14 @@ def measure(sp, name, builder, iters, warmup, dev, dt):
         depth_max = max(depth_max, d)
 
     torch.manual_seed(0)
-    # exactness on non-grad tensors
-    q0 = torch.randn(total, 1, NP, HN, device=dev, dtype=dt)
-    k0 = torch.randn(total, 1, NG, HN, device=dev, dtype=dt)
-    v0 = torch.randn(total, 1, NG, HN, device=dev, dtype=dt)
-    maxdiff = _flex_exact(sp, q0, k0, v0, node_start, node_len, node_parent, total, dev)
+    # exactness on non-grad tensors (the FlexAttention oracle is O(total^2) memory, so skip it for
+    # very large replicated shapes -- exactness is shape-topology-dependent, not size-dependent).
+    maxdiff = float("nan")
+    if check_exact:
+        q0 = torch.randn(total, 1, NP, HN, device=dev, dtype=dt)
+        k0 = torch.randn(total, 1, NG, HN, device=dev, dtype=dt)
+        v0 = torch.randn(total, 1, NG, HN, device=dev, dtype=dt)
+        maxdiff = _flex_exact(sp, q0, k0, v0, node_start, node_len, node_parent, total, dev)
 
     # FUSED tree over the deduplicated tree
     def mkg(h):
@@ -235,6 +255,10 @@ def main() -> int:
                     help="comma list of: " + ",".join(SHAPES))
     ap.add_argument("--iters", type=int, default=8)
     ap.add_argument("--warmup", type=int, default=8)
+    ap.add_argument("--sweep", default="",
+                    help="comma list of replication factors K (e.g. 1,2,4,8): replicate each shape "
+                         "into a K-tree forest and report per-token cost, to verify it is flat "
+                         "(=> the overhead ratio is bin-size independent; no iso-bin mode needed)")
     args = ap.parse_args()
 
     if not torch.cuda.is_available():
@@ -253,15 +277,39 @@ def main() -> int:
 
     dev = torch.device("cuda")
     dt = torch.bfloat16
+    shapes = [s.strip() for s in args.shapes.split(",") if s.strip()]
+    for nm in shapes:
+        if nm not in SHAPES:
+            print(f"  (unknown shape {nm}; known: {list(SHAPES)})")
+            return 1
     print(f"# device={torch.cuda.get_device_name()} dtype=bf16 heads={NP} kv_heads={NG} head_dim={HN} "
           f"iters={args.iters}")
+
+    if args.sweep:
+        # Scaling check: replicate each shape into a K-tree forest (more trajectories, fixed per-tree
+        # shape) and report per-token cost. Flat per-token across K => attention time is linear in
+        # total tokens for BOTH paths => the overhead ratio is bin-size independent.
+        Ks = [int(x) for x in args.sweep.split(",") if x.strip()]
+        print("# SCALING SWEEP: replicate KxK (fixed per-tree shape). Flat per-token => linear regime.\n")
+        hdr = ["shape", "K", "tree_tok", "base_tok", "fused_ns/tok", "bd_ns/tok", "per_tok_ovh"]
+        print("  ".join(f"{c:>13}" for c in hdr))
+        for nm in shapes:
+            base = SHAPES[nm]()
+            for K in Ks:
+                r = measure(sp, nm, (lambda b=base, k=K: replicate(b, k)), args.iters, args.warmup,
+                            dev, dt, check_exact=(K == 1))
+                fpt = r["fused_ms"] / r["tree_tokens"] * 1e6
+                bpt = r["bd_ms"] / r["base_tokens"] * 1e6
+                vals = [nm, K, r["tree_tokens"], r["base_tokens"],
+                        f"{fpt:.1f}", f"{bpt:.1f}", f"{r['overhead']:.2f}x"]
+                print("  ".join(f"{str(v):>13}" for v in vals))
+        print("\n# per-token flat across K => single-shape overhead is representative (bin-size independent).")
+        return 0
+
     hdr = ["shape", "nodes", "rows", "depth", "tree_tok", "base_tok", "dup",
            "fused_ms", "bd_ms", "per_tok_ovh", "net_speedup", "max|Δflex|"]
     print("  ".join(f"{c:>12}" for c in hdr))
-    for nm in [s.strip() for s in args.shapes.split(",") if s.strip()]:
-        if nm not in SHAPES:
-            print(f"  (unknown shape {nm}; known: {list(SHAPES)})")
-            continue
+    for nm in shapes:
         r = measure(sp, nm, SHAPES[nm], args.iters, args.warmup, dev, dt)
         vals = [r["name"], r["nodes"], r["rows"], r["depth"], r["tree_tokens"], r["base_tokens"],
                 f"{r['dup']:.2f}", f"{r['fused_ms']:.2f}", f"{r['bd_ms']:.2f}",
