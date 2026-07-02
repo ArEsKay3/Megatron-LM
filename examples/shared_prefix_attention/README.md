@@ -42,23 +42,28 @@ For each tree SHAPE, on identical work (the same leaf trajectories):
 - **BLOCK-DIAG** — plain causal `flash_attn_varlen` over the *same* trajectories fully expanded
   (no sharing; prompt re-encoded per leaf). This is what nemo-rl uses without shared-prefix packing.
 
-Reported (fwd+bwd, best-of-N):
+Each shape is reported for **two phases** — `fwd+bwd` (training) and `fwd-only` (logprob):
 
-| column | role | meaning |
+| metric | role | meaning |
 |---|---|---|
-| `net_speedup` | **VERDICT** | `bd_ms / fused_ms` — total fwd+bwd time for the SAME trajectories, tree vs block-diag. >1 ⇒ tree wins on attention. This is the final comparison point. |
-| `per_tok_ovh` | kernel target | `(fused_ms/tree_tok) / (bd_ms/base_tok)` — size-independent kernel penalty; drive it toward 1.0 (this is what `net` improves through). |
-| `dup` | context | `base_tokens / tree_tokens` — token reduction from prefix sharing. `net == dup / per_tok_ovh`. |
-| `maxdiff_flex` | correctness | max abs elementwise diff, fused output vs FlexAttention tree-mask reference (bf16 ⇒ ~1e-2). MUST stay small — optimizations must preserve exactness. |
+| `net` | **VERDICT** | `bd_ms / fused_ms` — total wall-time for the SAME trajectories, tree vs block-diag. >1 ⇒ tree wins. Reported per phase. |
+| `FLOP ceiling` | **theoretical best** | `bd_pairs / tree_pairs` — net speedup if the tree kernel ran at flash's achieved TFLOP/s. The tree mask has *fewer* (q,k) pairs (shared prefix attended once), so this — not `dup` — is the real headroom / fastest we could go. |
+| achieved `TFLOP/s` + `eff%` | **kernel target** | fused vs block-diag achieved TFLOP/s (FLOPs the mask implies ÷ time). `eff% = fused/bd`; the gap to 100% is the kernel work left. `net = FLOP_ceiling × eff`. |
+| `per_tok_ovh` | per-token view | per-token time ratio (size-independent). Kept because `--sweep` uses it to prove linear scaling; **secondary** to the FLOP view (the tree does different FLOPs per token). |
+| `dup` | context | `base_tokens / tree_tokens` — token reduction from sharing. |
+| `maxdiff_flex` | correctness | max abs diff vs FlexAttention tree-mask reference (bf16 ⇒ ~1e-2). MUST stay small. |
 
-The **verdict is `net_speedup` (raw fwd+bwd wall-time ratio)**, not per-token time. Per-token only
-appears in `--sweep`, to prove the linear regime that makes comparing two different-sized bins by
-their totals valid — and as the size-independent target the kernel optimization drives down.
+**Why FLOP/s, not per-token.** Per-token normalization silently penalizes the tree for doing
+*fewer* attention FLOPs (the shared prefix is attended once, not re-encoded per leaf). The attention
+**mask**, not the token count, sets the real math. So the honest measures are the **FLOP ceiling**
+(best possible net, from the sparser mask) and **achieved TFLOP/s** (how close the kernel runs to
+flash's rate): `net = FLOP_ceiling × (fused_TFLOP/s ÷ bd_TFLOP/s)`. Block-diag flash runs near peak,
+so `bd_TFLOP/s` is the bar; `eff%` is the kernel gap to close.
 
-**Throughput model:** shared-prefix packing wins on attention iff `dup > per_tok_overhead`.
-The fused kernel does *fewer* attention FLOPs than the expanded baseline, so the overhead is the
-fp32 online-softmax merge + per-depth cross passes + index gathers/scatters — **not** real compute.
-That is the headroom: driving `per_tok_ovh` toward 1.0 (target ~2.0 first) directly raises `net`.
+**Why two phases.** Logprob is a single **forward**; training is **fwd+bwd**. The tree overhead lives
+in attention, and the backward adds large *non-attention* weight-gradient GEMMs that dilute it — so
+the SP penalty is **worse for fwd-only (logprob)** than fwd+bwd (training). The bench reports both, so
+the optimizer watches the **forward** number — the phase SP hurts most.
 
 ## Why per-token normalization is valid (`--sweep`)
 

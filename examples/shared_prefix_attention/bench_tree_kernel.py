@@ -171,6 +171,55 @@ def _best_fwd_bwd_ms(fn, q, k, v, iters, warmup):
     return best
 
 
+def _best_fwd_ms(fn, q, k, v, iters, warmup):
+    """Forward-only best-of-N ms (no backward). This is the logprob-phase cost: logprob is a single
+    forward, so its SP penalty tracks the FORWARD overhead, whereas training (fwd+bwd) dilutes it
+    with the backward's non-attention weight-gradient GEMMs."""
+    with torch.no_grad():
+        for _ in range(warmup):
+            fn(q, k, v)
+        best = float("inf")
+        for _ in range(iters):
+            torch.cuda.synchronize()
+            s = torch.cuda.Event(enable_timing=True)
+            e = torch.cuda.Event(enable_timing=True)
+            s.record()
+            fn(q, k, v)
+            e.record()
+            torch.cuda.synchronize()
+            best = min(best, s.elapsed_time(e))
+    return best
+
+
+def _attn_pairs_tree(node_len, node_parent):
+    """Unmasked (query, key) attention pairs for the tree mask: each node attends its own tokens
+    causally + every ancestor node's tokens fully. This is the ACTUAL attention math the mask
+    implies -- fewer than the expanded baseline, since a shared prefix is attended once."""
+    n = len(node_len)
+    anc_sum = [0] * n  # total length of a node's strict ancestors
+    for i in range(n):
+        s, p = 0, node_parent[i]
+        while p != -1:
+            s += node_len[p]
+            p = node_parent[p]
+        anc_sum[i] = s
+    return sum(node_len[i] * (node_len[i] + 1) // 2 + node_len[i] * anc_sum[i] for i in range(n))
+
+
+def _attn_pairs_blockdiag(rows):
+    """Unmasked (q,k) pairs for independent causal sequences (the no-sharing baseline)."""
+    return sum(L * (L + 1) // 2 for L in rows)
+
+
+def _tflops(pairs, ms, *, backward):
+    """Approx achieved attention TFLOP/s. Per (q,k) pair per query-head: QK^T (2d) + AV (2d) = 4d
+    fwd; backward ~2.5x fwd. Constant cancels in fused-vs-flash ratios, so absolute value is
+    approximate but the RATIO (kernel efficiency) is meaningful."""
+    fwd = 4.0 * HN * pairs * NP
+    flop = (3.5 * fwd) if backward else fwd   # fwd+bwd = fwd + 2.5*fwd
+    return flop / (ms / 1e3) / 1e12
+
+
 def _flex_exact(sp, q, k, v, node_start, node_len, node_parent, total, dev):
     """max|fused - FlexAttention(tree mask)| over all rows (correctness gate)."""
     import torch.nn.attention.flex_attention as flex
@@ -218,15 +267,15 @@ def measure(sp, name, builder, iters, warmup, dev, dt, check_exact=True):
         v0 = torch.randn(total, 1, NG, HN, device=dev, dtype=dt)
         maxdiff = _flex_exact(sp, q0, k0, v0, node_start, node_len, node_parent, total, dev)
 
-    # FUSED tree over the deduplicated tree
+    # FUSED tree over the deduplicated tree -- fwd+bwd (training) AND fwd-only (logprob).
     def mkg(h):
         return torch.randn(total, 1, h, HN, device=dev, dtype=dt, requires_grad=True)
 
+    fused_fn = lambda a, b, c: sp.flash_composed_forest_attention_fused(  # noqa: E731
+        a, b, c, node_start, node_len, node_parent)
     qf, kf, vf = mkg(NP), mkg(NG), mkg(NG)
-    t_fused = _best_fwd_bwd_ms(
-        lambda a, b, c: sp.flash_composed_forest_attention_fused(a, b, c, node_start, node_len, node_parent),
-        qf, kf, vf, iters, warmup,
-    )
+    t_fused = _best_fwd_bwd_ms(fused_fn, qf, kf, vf, iters, warmup)
+    t_fused_fwd = _best_fwd_ms(fused_fn, qf, kf, vf, iters, warmup)
 
     # BLOCK-DIAG baseline: causal flash_varlen over the same leaves fully expanded (no sharing)
     base_tokens = sum(base_rows)
@@ -236,17 +285,34 @@ def measure(sp, name, builder, iters, warmup, dev, dt, check_exact=True):
     qb = torch.randn(base_tokens, NP, HN, device=dev, dtype=dt, requires_grad=True)
     kb = torch.randn(base_tokens, NG, HN, device=dev, dtype=dt, requires_grad=True)
     vb = torch.randn(base_tokens, NG, HN, device=dev, dtype=dt, requires_grad=True)
-    t_bd = _best_fwd_bwd_ms(
-        lambda a, b, c: flash_attn_varlen_func(a, b, c, cu, cu, maxlen, maxlen, causal=True),
-        qb, kb, vb, iters, warmup,
-    )
+    bd_fn = lambda a, b, c: flash_attn_varlen_func(a, b, c, cu, cu, maxlen, maxlen, causal=True)  # noqa: E731
+    t_bd = _best_fwd_bwd_ms(bd_fn, qb, kb, vb, iters, warmup)
+    t_bd_fwd = _best_fwd_ms(bd_fn, qb, kb, vb, iters, warmup)
 
     dup = base_tokens / total
-    per_tok_overhead = (t_fused / total) / (t_bd / base_tokens)
+    # per-token overhead: fwd+bwd tracks TRAINING; fwd-only tracks LOGPROB (single forward, so its
+    # SP penalty is higher -- the backward's non-attention weight-grad GEMMs dilute it in training).
+    overhead_fb = (t_fused / total) / (t_bd / base_tokens)
+    overhead_fwd = (t_fused_fwd / total) / (t_bd_fwd / base_tokens)
     net = t_bd / t_fused
+    net_fwd = t_bd_fwd / t_fused_fwd
+
+    # FLOP lens: the tree mask implies FEWER (q,k) pairs than the expanded baseline (shared prefix
+    # attended once). flop_ceiling = the net speedup you'd get IF the tree kernel ran at flash's
+    # achieved TFLOP/s -- i.e. the fastest we could go. achieved TFLOP/s (fused vs bd) is the kernel
+    # efficiency gap; net == flop_ceiling * (fused_tflops / bd_tflops).
+    pairs_tree = _attn_pairs_tree(node_len, node_parent)
+    pairs_bd = _attn_pairs_blockdiag(base_rows)
+    flop_ceiling = pairs_bd / pairs_tree
     return dict(name=name, nodes=len(node_len), rows=len(base_rows), depth=depth_max,
                 tree_tokens=total, base_tokens=base_tokens, dup=dup,
-                fused_ms=t_fused, bd_ms=t_bd, overhead=per_tok_overhead, net=net, maxdiff=maxdiff)
+                fused_ms=t_fused, bd_ms=t_bd, overhead=overhead_fb, overhead_fwd=overhead_fwd,
+                net=net, net_fwd=net_fwd, maxdiff=maxdiff,
+                pairs_tree=pairs_tree, pairs_bd=pairs_bd, flop_ceiling=flop_ceiling,
+                fused_tflops=_tflops(pairs_tree, t_fused, backward=True),
+                bd_tflops=_tflops(pairs_bd, t_bd, backward=True),
+                fused_tflops_fwd=_tflops(pairs_tree, t_fused_fwd, backward=False),
+                bd_tflops_fwd=_tflops(pairs_bd, t_bd_fwd, backward=False))
 
 
 def main() -> int:
@@ -306,17 +372,25 @@ def main() -> int:
         print("\n# per-token flat across K => single-shape overhead is representative (bin-size independent).")
         return 0
 
-    hdr = ["shape", "nodes", "rows", "depth", "tree_tok", "base_tok", "dup",
-           "fused_ms", "bd_ms", "per_tok_ovh", "net_speedup", "maxdiff_flex"]
-    print("  ".join(f"{c:>12}" for c in hdr))
     for nm in shapes:
         r = measure(sp, nm, SHAPES[nm], args.iters, args.warmup, dev, dt)
-        vals = [r["name"], r["nodes"], r["rows"], r["depth"], r["tree_tokens"], r["base_tokens"],
-                f"{r['dup']:.2f}", f"{r['fused_ms']:.2f}", f"{r['bd_ms']:.2f}",
-                f"{r['overhead']:.2f}x", f"{r['net']:.2f}x", f"{r['maxdiff']:.1e}"]
-        print("  ".join(f"{str(v):>12}" for v in vals))
-    print("\n# net_speedup = bd_ms/fused_ms = dup/per_tok_ovh.  >1 = tree wins on attention.")
-    print("# per_tok_ovh is the kernel penalty to drive toward 1.0 (merge+gather+per-depth launches).")
+        eff_fb = 100 * r["fused_tflops"] / r["bd_tflops"]
+        eff_fwd = 100 * r["fused_tflops_fwd"] / r["bd_tflops_fwd"]
+        print(f"\n=== {r['name']}  nodes={r['nodes']} rows={r['rows']} depth={r['depth']} "
+              f"tree_tok={r['tree_tokens']} base_tok={r['base_tokens']} dup={r['dup']:.2f} "
+              f"exact(maxdiff_flex)={r['maxdiff']:.1e} ===")
+        print(f"  attention pairs: tree={r['pairs_tree']:,} blockdiag={r['pairs_bd']:,}"
+              f"  -> FLOP ceiling (max net if kernel hit flash TFLOP/s) = {r['flop_ceiling']:.2f}x")
+        print(f"  fwd+bwd (TRAINING): fused={r['fused_ms']:.2f}ms bd={r['bd_ms']:.2f}ms  net={r['net']:.2f}x"
+              f"  per_tok_ovh={r['overhead']:.2f}x  TFLOP/s fused={r['fused_tflops']:.0f}"
+              f" bd={r['bd_tflops']:.0f} (eff {eff_fb:.0f}%)")
+        print(f"  fwd-only (LOGPROB): net={r['net_fwd']:.2f}x"
+              f"  per_tok_ovh={r['overhead_fwd']:.2f}x  TFLOP/s fused={r['fused_tflops_fwd']:.0f}"
+              f" bd={r['bd_tflops_fwd']:.0f} (eff {eff_fwd:.0f}%)")
+    print("\n# net = FLOP_ceiling * (fused_TFLOP/s / bd_TFLOP/s).")
+    print("#   FLOP_ceiling = speedup if the tree kernel ran at flash's achieved TFLOP/s (best case,")
+    print("#   from the sparser tree mask); eff% = how close it is -> the kernel work left to do.")
+    print("# per_tok_ovh is the per-token view (fwd-only=logprob, fwd+bwd=training).")
     return 0
 
 
