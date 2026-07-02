@@ -18,20 +18,31 @@ python examples/shared_prefix_attention/bench_tree_kernel.py --shapes branched_m
 ## Example output (GB300, bf16, iters=8)
 
 ```
-# GB300, bf16, iters=8    (ovh=per_tok_ovh, net=net_speedup, Δflex=maxdiff_flex)
-       shape  depth  tree_tok  base_tok   dup  fused_ms  bd_ms    ovh    net  Δflex
- balanced_d4      4     16384     49152  3.00     19.89  13.38  4.46x  0.67x   4e-3
- branched_mc      6     24512     32608  1.33     24.71  10.70  3.07x  0.43x   4e-3
+=== balanced_d4  nodes=31 rows=16 depth=4 tree_tok=16384 base_tok=49152 dup=3.00 exact(maxdiff_flex)=3.9e-03 ===
+  attention pairs: tree=38,019,072 blockdiag=75,522,048  -> FLOP ceiling (max net if kernel hit flash TFLOP/s) = 1.99x
+  fwd+bwd (TRAINING): fused=19.99ms bd=13.41ms  net=0.67x  per_tok_ovh=4.47x  TFLOP/s fused=109 bd=323 (eff 34%)
+  fwd-only (LOGPROB): net=0.32x  per_tok_ovh=9.47x  TFLOP/s fused=66 bd=415 (eff 16%)
+
+=== branched_mc  nodes=15 rows=9 depth=6 tree_tok=24512 base_tok=32608 dup=1.33 exact(maxdiff_flex)=3.9e-03 ===
+  attention pairs: tree=54,631,328 blockdiag=60,131,952  -> FLOP ceiling (max net if kernel hit flash TFLOP/s) = 1.10x
+  fwd+bwd (TRAINING): fused=24.90ms bd=10.72ms  net=0.43x  per_tok_ovh=3.09x  TFLOP/s fused=126 bd=322 (eff 39%)
+  fwd-only (LOGPROB): net=0.23x  per_tok_ovh=5.86x  TFLOP/s fused=83 bd=401 (eff 21%)
 ```
 
-(The tool also prints `nodes` and `rows` per shape; trimmed here for width.)
+Two things to read (both matter more than per-token):
 
-Reading it: the fused tree kernel is exact (`maxdiff_flex` ~4e-3, bf16 rounding) but currently
-**slower on attention** than block-diagonal flash — `net_speedup` 0.43x on the branched-MC shape
-(≈2.3x slower), because the ~3.1x per-token kernel penalty outweighs the 1.33x token reduction.
-The optimization goal is to drive `per_tok_ovh` down (toward the 2.0x guard target, ideally ~1x);
-once `per_tok_ovh < dup`, `net_speedup` crosses 1.0 and the tree wins on attention. (Numbers move
-with GPU/flash version and shape; regenerate before drawing conclusions.)
+1. **FLOP ceiling = the upside limit.** For `branched_mc` it's only **1.10×** — the deep-branch tree
+   mask has nearly as many (q,k) pairs as block-diag (54.6M vs 60.1M), because *every branch still
+   attends the whole shared prefix*. So prefix sharing saves **tokens** (dup 1.33 → speeds up
+   token-bound work like MLP) but barely reduces **attention FLOPs**. `balanced_d4` shares more
+   (ceiling 1.99×). The attention upside is shape-dependent and, for this RL workload, modest — even
+   a perfect kernel caps branched-MC attention at ~1.10×.
+2. **Kernel efficiency = the gap to that ceiling.** fused runs at **16–39% of flash's TFLOP/s**, and
+   `net = FLOP_ceiling × eff` (branched_mc training = 1.10 × 39% = 0.43×). The **forward is weakest**
+   (16–21% eff), which is why **logprob** (forward-only) is hit hardest. Closing eff→100% takes
+   branched-MC attention from 0.43× up to its 1.10× ceiling — a win, but a modest one for this shape.
+
+(Numbers move with GPU/flash version and shape; regenerate before drawing conclusions.)
 
 ## What it measures
 
