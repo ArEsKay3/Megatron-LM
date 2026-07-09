@@ -4,6 +4,7 @@ import asyncio
 import concurrent
 import copy
 import functools
+import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, OrderedDict, Tuple, Union
@@ -225,6 +226,13 @@ class TextGenerationController(MTPControllerMixin):
         self.model_config = self.inference_wrapped_model.model.config
         inference_config = self.inference_wrapped_model.inference_context.config
         self.tokenizer = tokenizer
+        # Model-level EOS token set. HF models declare `generation_config.eos_token_id`
+        # which may be a LIST (e.g. [2, 11] = [</s>, <|im_end|>]); the per-request
+        # `termination_id` only holds one. Yank the generation_config off the tokenizer
+        # (HF tokenizers attach it; others won't) and honor every declared eos token, so
+        # generation stops like vLLM does. None => only the per-request termination_id is
+        # used (unchanged behavior). Stored on CPU to match `sampled_tokens_cpu`.
+        self._eos_token_ids = self._build_eos_token_ids(tokenizer)
         self.num_speculative_tokens = inference_config.num_speculative_tokens
 
         pg_collection = inference_config.pg_collection
@@ -377,6 +385,101 @@ class TextGenerationController(MTPControllerMixin):
         self._sp_enabled = self.model_config.sequence_parallel and self._tp_size > 1
 
         self._init_mtp_sampling_tensors()
+
+    def _build_eos_token_ids(self, tokenizer) -> Optional[Tensor]:
+        """Build the model-level EOS token-id set used for termination.
+
+        Honors `generation_config.eos_token_id` (which HF may declare as a LIST, e.g.
+        `[2, 11]`) in addition to the tokenizer's single `eod`. The generation_config is
+        yanked off the tokenizer if present (HF tokenizers attach it; other tokenizers
+        won't). Returns None when there is at most one eos id -- the per-request
+        `termination_id` already covers that case, so behavior is unchanged. The tensor
+        is on CPU to match `sampled_tokens_cpu` in the finished-request check.
+        """
+        ids = set()
+        eod = getattr(tokenizer, "eod", None)
+        if eod is not None:
+            ids.add(int(eod))
+        gen_cfg = getattr(tokenizer, "generation_config", None)
+        if gen_cfg is not None:
+            eos = gen_cfg.get("eos_token_id")
+            if isinstance(eos, int):
+                ids.add(eos)
+            elif isinstance(eos, (list, tuple)):
+                ids.update(int(e) for e in eos if isinstance(e, int))
+        result = None if len(ids) <= 1 else torch.tensor(sorted(ids), dtype=torch.long)
+        is_rank0 = (not torch.distributed.is_initialized()) or torch.distributed.get_rank() == 0
+        if is_rank0:
+            gen_cfg_eos = gen_cfg.get("eos_token_id") if gen_cfg is not None else None
+            logging.info(
+                "Inference termination EOS ids: tokenizer.eod=%s, "
+                "generation_config.eos_token_id=%s -> eos set=%s (multi-eos active=%s)",
+                eod,
+                gen_cfg_eos,
+                sorted(ids),
+                result is not None,
+            )
+        return result
+
+    def _init_mtp_sampling_tensors(self):
+        """Pre-allocate MTP sampling tensors.
+
+        Addresses must be stable across steps for CUDA graph capture.
+        """
+        self._mtp_resolved_padded_count = None
+        if not self.num_speculative_tokens:
+            self._sampled_mtp_tokens_cuda = None
+            self._accepted_tokens_per_request = None
+            self._last_accepted_seq_indices = None
+            self._async_sched_mtp_token_row_indices = None
+            self._async_sched_sampled_mtp_tokens_cpu_buffer = None
+            self._async_sched_accepted_tokens_cpu_buffer = None
+            self._async_sched_accepted_counts_cpu_buffer = None
+            self._async_sched_mtp_verification_gpu_ready_event = None
+            self._async_sched_accepted_counts_cpu_ready_event = None
+            return
+
+        context = self.inference_wrapped_model.inference_context
+        max_requests = context.max_requests
+        device = torch.cuda.current_device()
+        self._sampled_mtp_tokens_cuda = torch.empty(
+            [self.num_speculative_tokens, max_requests], dtype=torch.int64, device=device
+        )
+        self._async_sched_mtp_token_row_indices = torch.arange(context.max_tokens, device=device)
+        self._accepted_tokens_per_request = (
+            torch.ones(
+                [max_requests, self.num_speculative_tokens], dtype=torch.int64, device=device
+            )
+            * -1
+        )
+        self._accepted_token_counts_per_request = torch.zeros(
+            max_requests, dtype=torch.int64, device=device
+        )
+        self._last_accepted_seq_indices_buf = torch.empty(
+            max_requests, dtype=torch.int64, device=device
+        )
+        self._last_accepted_seq_indices = None
+        self._mtp_token_ids_buf = torch.empty([1, max_requests], dtype=torch.int64, device=device)
+        self._mtp_position_ids_buf = torch.empty(
+            [1, max_requests], dtype=torch.int64, device=device
+        )
+        self._async_sched_sampled_mtp_tokens_cpu_buffer = torch.empty(
+            [self.num_speculative_tokens, max_requests],
+            dtype=torch.int64,
+            device="cpu",
+            pin_memory=True,
+        )
+        self._async_sched_accepted_tokens_cpu_buffer = torch.empty(
+            [max_requests, self.num_speculative_tokens],
+            dtype=torch.int64,
+            device="cpu",
+            pin_memory=True,
+        )
+        self._async_sched_accepted_counts_cpu_buffer = torch.empty(
+            max_requests, dtype=torch.int64, device="cpu", pin_memory=True
+        )
+        self._async_sched_mtp_verification_gpu_ready_event = torch.cuda.Event()
+        self._async_sched_accepted_counts_cpu_ready_event = torch.cuda.Event()
 
     @staticmethod
     def tokenize_prompt(tokenizer, prompt: str, add_BOS: bool = False) -> List[int]:
@@ -1712,12 +1815,38 @@ class TextGenerationController(MTPControllerMixin):
         max_sequence_lengths = context.get_max_sequence_lengths()
 
         # Request finished if termination_id or length >= max_sequence_length.
-        # Both operands are CPU: sampled_tokens_cpu was D2H'd above, and
-        # active_request_metadata is CPU-pinned.
-        active_request_mask = (
-            sampled_tokens_cpu
-            != context.active_request_metadata["termination_id"][:active_request_count]
-        ).byte() & torch.less(active_sequence_lengths, max_sequence_lengths).byte()
+        # These operands are CPU: sampled_tokens_cpu was D2H'd above, and
+        # active_request_metadata is CPU-pinned. Under MTP, termination can be
+        # hit by an accepted speculative token before the new base sample.
+        termination_ids = context.active_request_metadata["termination_id"][:active_request_count]
+        termination_enabled = termination_ids >= 0
+        termination_hit = termination_enabled & (sampled_tokens_cpu == termination_ids)
+        # Also terminate on any of the model's declared EOS tokens. The per-request
+        # `termination_id` is a single id (default `tokenizer.eod`), but a model may
+        # declare several (`generation_config.eos_token_id` list, e.g. [2, 11]).
+        # Gated by `termination_enabled` so `ignore_eos` (termination_id == -1) still
+        # never stops. `_eos_token_ids` is a small CPU tensor (or None => no extra ids).
+        # NOTE: this is a model-level set living beside the per-request check; a cleaner
+        # per-request refactor (populate stop_word_ids / a termination-id set) is a TODO.
+        if self._eos_token_ids is not None:
+            termination_hit |= termination_enabled & torch.isin(
+                sampled_tokens_cpu, self._eos_token_ids
+            )
+        if self.num_speculative_tokens > 0 and termination_enabled.any().item():
+            # Avoid a per-step CUDA sync in the common fixed-length MTP path.
+            # Accepted speculative tokens only need to be inspected when at
+            # least one active request can terminate by token id.
+            accepted_tokens_cpu = self._accepted_tokens_per_request[:active_request_count].cpu()
+            termination_hit |= termination_enabled & (
+                accepted_tokens_cpu == termination_ids[:, None]
+            ).any(dim=1)
+            if self._eos_token_ids is not None:
+                termination_hit |= termination_enabled & torch.isin(
+                    accepted_tokens_cpu, self._eos_token_ids
+                ).any(dim=1)
+        active_request_mask = (~termination_hit).byte() & torch.less(
+            active_sequence_lengths, max_sequence_lengths
+        ).byte()
 
         # Apply stop words detected during the previous engine bookkeeping step.
         self._apply_stop_word_finished_ids(active_request_ids, active_request_mask)
@@ -1972,9 +2101,20 @@ class TextGenerationController(MTPControllerMixin):
         active_request_ids = context.request_ids[active_request_slice].long()
 
         max_sequence_lengths = context.get_max_sequence_lengths()
-        active_request_mask = (
-            sampled_tokens_cpu != context.request_metadata["termination_id"][active_request_slice]
-        ).byte() & torch.less(resolved_sequence_lengths, max_sequence_lengths).byte()
+        # Mirror the synchronous path's termination check. A plain `!=` against the
+        # single per-request termination_id misses the model's other declared eos
+        # tokens (generation_config.eos_token_id may be a list, e.g. [2, 11]), which
+        # is why async-scheduled runs generated straight through `</s>`.
+        termination_ids = context.request_metadata["termination_id"][active_request_slice]
+        termination_enabled = termination_ids >= 0
+        termination_hit = termination_enabled & (sampled_tokens_cpu == termination_ids)
+        if self._eos_token_ids is not None:
+            termination_hit |= termination_enabled & torch.isin(
+                sampled_tokens_cpu, self._eos_token_ids
+            )
+        active_request_mask = (~termination_hit).byte() & torch.less(
+            resolved_sequence_lengths, max_sequence_lengths
+        ).byte()
 
         self._apply_stop_word_finished_ids(active_request_ids, active_request_mask)
 
