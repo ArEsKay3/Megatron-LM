@@ -371,6 +371,11 @@ def get_dynamic_inference_engine(model: Optional[MegatronModule] = None) -> Dyna
     tokenizer = build_tokenizer(args)
 
     inference_config = get_inference_config_from_model_and_args(model, args)
+
+    # Log the resolved model + inference configs once on rank 0 for reference.
+    log_single_rank(logger, logging.INFO, "TransformerConfig:\n%s", model.config)
+    log_single_rank(logger, logging.INFO, "InferenceConfig:\n%s", inference_config)
+
     context = DynamicInferenceContext(model.config, inference_config)
     inference_wrapped_model = GPTInferenceWrapper(model, context)
     controller = TextGenerationController(inference_wrapped_model, tokenizer)
