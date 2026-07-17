@@ -25,9 +25,11 @@ pass on GPU before the forward integration (Milestone 1b). Keeping these as pure
 import contextlib
 import types
 from dataclasses import dataclass, field
-from typing import Callable, List
+from typing import Callable, Dict, List, Sequence, Tuple
 
 import torch
+
+from megatron.rl.tree_layout import PackedTreeLayout
 
 
 @dataclass
@@ -502,3 +504,118 @@ def extract_completion_logprobs(
     logp = torch.log_softmax(logits[layout.prev_positions], dim=-1)   # [n_tok, vocab]
     targets = packed_tokens[layout.comp_positions].unsqueeze(-1)      # [n_tok, 1]
     return logp.gather(-1, targets).squeeze(-1)                        # [n_tok]
+
+
+@dataclass
+class ForestBin:
+    """One physical microbatch bin as a forest of shared-prefix trees (Case 1).
+
+    ``groups[gid] = (prefix_len, [trajectory indices])`` -- each distinct group present
+    contributes its prompt ONCE (a depth-1 tree). ``layout`` is the materialized
+    :class:`PackedTreeLayout` (nodes ordered: each group's prefix then its completions, in
+    ``groups`` iteration order). ``used_tokens`` counts each group's prompt once. Bins hold
+    ONLY shareable groups; non-shareable trajectories are returned separately for the existing
+    block-diagonal (THD) packer, keeping the packed-tensor build homogeneous.
+    """
+
+    groups: Dict[int, Tuple[int, List[int]]] = field(default_factory=dict)
+    used_tokens: int = 0
+    layout: PackedTreeLayout = None
+
+
+def plan_shared_prefix_forest_bins(
+    *,
+    group_ids: Sequence[int],
+    prompt_lens: Sequence[int],
+    real_lens: Sequence[int],
+    seq_lengths: Sequence[int],
+    bin_size: int,
+    max_sequences_per_bin: int = 16,
+) -> Tuple[List[ForestBin], List[int]]:
+    """Multi-group ("forest") shared-prefix packing -- the Case-1 generalization of
+    :func:`plan_shared_prefix_bins` (which is one group per bin).
+
+    Co-packs completions from DIFFERENT groups into each bin, charging a prompt only the
+    first time its group appears in a bin, so bins fill toward ``bin_size`` instead of
+    wasting the tail of each group's last bin. Packs at the granularity of individual
+    completions (best-fit-decreasing); ``max_sequences_per_bin`` caps completions behind one
+    prompt *within a bin* (a group may span several bins).
+
+    Trajectories that can't share (``group_id < 0``, no prompt, no completion, singleton group,
+    or a single ``[P+C]`` exceeding ``bin_size``) are NOT co-packed -- they are returned as a
+    list of indices for the caller's existing block-diagonal (THD) packer, so forest bins stay
+    homogeneous (all shared-prefix) and the packed-tensor build is uniform.
+
+    All inputs are per-trajectory (length N). Returns ``(bins, blockdiag_indices)`` -- ``bins``
+    a list of :class:`ForestBin` (each with its :class:`PackedTreeLayout`), ``blockdiag_indices``
+    the trajectory indices to pack normally. Pure Python and stack-agnostic.
+    """
+    from collections import defaultdict
+
+    n = len(group_ids)
+    buckets: Dict[int, List[int]] = defaultdict(list)
+    blockdiag_atoms: List[int] = []
+    for i in range(n):
+        gid = int(group_ids[i])
+        lp = int(prompt_lens[i])
+        # Ineligible (no group / prompt / completion, or a single [P+C] too big for a bin)
+        # -> block-diag/THD path. Singleton groups handled below.
+        if gid < 0 or lp <= 0 or lp >= int(real_lens[i]) or int(real_lens[i]) > bin_size:
+            blockdiag_atoms.append(i)
+        else:
+            buckets[gid].append(i)
+
+    bins: List[ForestBin] = []
+
+    # Compute cost = fixed completion mass + Σ_g Lp_g * (bins group g touches). The completion
+    # mass is fixed, so we minimize PROMPT DUPLICATION: keep each group's completions together
+    # so its prompt is stored once per bin it must span (the lower bound ceil(footprint/bin)).
+    # Process groups largest-footprint-first; within a group, fill the group's OWN bins before
+    # opening it in a new one (no extra prompt copy). When a group must open in a new bin, place
+    # it in the tightest partial bin that fits prompt+completion -- that costs the same one prompt
+    # copy as a fresh bin but reduces bin count (free fill).
+    def _group_footprint(idxs: List[int]) -> int:
+        lp = int(prompt_lens[idxs[0]])
+        return lp + sum(int(real_lens[j]) - lp for j in idxs)
+
+    eligible = [g for g, idxs in buckets.items() if len(idxs) >= 2]
+    for gid in sorted(eligible, key=lambda g: -_group_footprint(buckets[g])):
+        idxs = buckets[gid]
+        lp = int(prompt_lens[idxs[0]])
+        group_bins: List[int] = []  # bins (indices into `bins`) currently holding this group
+        for j in sorted(idxs, key=lambda j: -(int(real_lens[j]) - lp)):  # completions, longest first
+            lc = int(real_lens[j]) - lp
+            # 1) keep the group together: add to one of its existing bins if room + under the cap.
+            placed = False
+            for bidx in group_bins:
+                b = bins[bidx]
+                if len(b.groups[gid][1]) < max_sequences_per_bin and b.used_tokens + lc <= bin_size:
+                    b.groups[gid][1].append(j)
+                    b.used_tokens += lc
+                    placed = True
+                    break
+            if placed:
+                continue
+            # 2) open the group in the tightest OTHER bin that fits prompt+completion (free fill;
+            #    one prompt copy either way), else a fresh bin.
+            best, best_rem = None, None
+            for bidx, b in enumerate(bins):
+                if gid in b.groups:
+                    continue
+                rem = bin_size - (b.used_tokens + lp + lc)
+                if rem >= 0 and (best_rem is None or rem < best_rem):
+                    best, best_rem = bidx, rem
+            if best is None:
+                bins.append(ForestBin())
+                best = len(bins) - 1
+            bins[best].groups[gid] = (lp, [j])
+            bins[best].used_tokens += lp + lc
+            group_bins.append(best)
+
+    for b in bins:  # materialize the forest layout per bin (groups in insertion order)
+        sub = [
+            PackedTreeLayout.from_shared_prefix(g_lp, [int(real_lens[c]) - g_lp for c in comps])
+            for _gid, (g_lp, comps) in b.groups.items()
+        ]
+        b.layout = PackedTreeLayout.concat(sub)
+    return bins, sorted(blockdiag_atoms)
