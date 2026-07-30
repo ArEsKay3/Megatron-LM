@@ -7,6 +7,7 @@ import logging
 import math
 import os
 import time
+import weakref
 from collections import defaultdict
 from contextlib import nullcontext
 from copy import deepcopy
@@ -527,6 +528,9 @@ def delete_cuda_graphs():
     _CudagraphGlobalRecord.cudagraph_created = False
     _CudagraphGlobalRecord.cudagraph_record = []
     _CudagraphGlobalRecord.cudagraph_inference_record = []
+    for manager in list(CudaGraphManager._instances):
+        manager.cudagraph_runners.clear()
+        manager.custom_cudagraphs_lookup_table.clear()
 
     # TODO: Optional?: Force garbage collection to clean up memory
     gc.collect()
@@ -1359,6 +1363,15 @@ class CudaGraphManager(torch.nn.Module):
 
     """A global mempool for when 'cuda_graph_use_single_mempool' is used."""
     global_mempool = None
+    _instances = weakref.WeakSet()
+
+    @classmethod
+    def _ensure_global_mempool(cls):
+        if cls.global_mempool is None:
+            cls.global_mempool = torch.cuda.graph_pool_handle()
+            # Capture requires no prior work on the default stream.
+            torch.cuda.set_stream(torch.cuda.Stream())
+        return cls.global_mempool
 
     def __init__(
         self,
@@ -1423,16 +1436,13 @@ class CudaGraphManager(torch.nn.Module):
         self.cudagraph_runners: list[_CudaGraphRunner] = []
         self.custom_cudagraphs_lookup_table: dict = defaultdict(lambda: None)
         self.is_first_microbatch = False
+        self._instances.add(self)
 
         # Without pipeline parallelism, microbatches execute one at a time.
         # Therefore modules will always execute in the same order, so cudagraphs
         # can both be reused and share a single mempool.
         self.reuse_cudagraphs = self.pg_collection.pp.size() == 1
-        if CudaGraphManager.global_mempool is None:
-            CudaGraphManager.global_mempool = torch.cuda.graph_pool_handle()
-            # Cudagraph stream capture requires no operations on the default stream prior to the
-            # capture, so change to a side stream.
-            torch.cuda.set_stream(torch.cuda.Stream())
+        self._ensure_global_mempool()
 
     def call_ddp_preforward_hook(self, module):
         """Call any DDP pre-forward hooks which are used to launch async data parallel
@@ -1456,6 +1466,7 @@ class CudaGraphManager(torch.nn.Module):
         length of 'self.cudagraph_runners'.
         Otherwise, we assign a mempool per microbatch, which allows cudagraphs to be reused
         over different microbatches by tracking their respective fwd and bwd passes.'''
+        mempool = self._ensure_global_mempool()
         if reuse_cudagraphs:
             if cache_key is not None:
                 runner = self.custom_cudagraphs_lookup_table[cache_key]
@@ -1485,12 +1496,7 @@ class CudaGraphManager(torch.nn.Module):
                     )
                 else:
                     runner = _CudaGraphRunner(
-                        megatron_module,
-                        CudaGraphManager.global_mempool,
-                        args,
-                        kwargs,
-                        self.func,
-                        self.need_backward,
+                        megatron_module, mempool, args, kwargs, self.func, self.need_backward
                     )
                     if self._num_warmup_steps is not None:
                         runner.num_warmup_steps = self._num_warmup_steps
@@ -1505,12 +1511,7 @@ class CudaGraphManager(torch.nn.Module):
                 self.cudagraph_runners = self.cudagraph_runners[1:] + self.cudagraph_runners[:1]
             else:
                 runner = _CudaGraphRunner(
-                    megatron_module,
-                    CudaGraphManager.global_mempool,
-                    args,
-                    kwargs,
-                    self.func,
-                    self.need_backward,
+                    megatron_module, mempool, args, kwargs, self.func, self.need_backward
                 )
                 self.cudagraph_runners.append(runner)
 
@@ -1530,6 +1531,15 @@ class CudaGraphManager(torch.nn.Module):
                 If `inference_context` is provided, this gets set to the correct value.
         """
         is_inference_mode = 'inference_context' in kwargs.keys() and kwargs['inference_context']
+        if is_inference_mode:
+            inference_context = kwargs['inference_context']
+            if (
+                not inference_context.cuda_graphs_available
+                and not inference_context.is_creating_cuda_graphs
+            ):
+                if self.func is not None:
+                    return self.func(*args, **kwargs)
+                return super(MegatronModule, megatron_module).__call__(*args, **kwargs)
         if cache_key is None and is_inference_mode:
             inference_context = kwargs['inference_context']
             if inference_context.is_static_batching():

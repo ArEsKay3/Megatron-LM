@@ -586,7 +586,9 @@ try:
             # return_tokenized_data (implied by prevent_retokenization) needs the ids;
             # return_raw_text needs the ids to detokenize the prompt into raw_text.
             prevent_retokenization = req.get("prevent_retokenization", True)
-            return_tokenized_data = req.get("return_tokenized_data", False) or prevent_retokenization
+            return_tokenized_data = (
+                req.get("return_tokenized_data", False) or prevent_retokenization
+            )
             return_raw_text = req.get("return_raw_text", False)
             return_prompt_tokens = return_tokenized_data or return_raw_text
 
@@ -661,6 +663,7 @@ try:
         choices = []
         total_completion_tokens = 0
         prompt_tokens_counts = []
+        cached_tokens_counts = []
 
         # return_tokenized_data / return_raw_text / return_prompt_tokens were computed
         # at submit time (above) and drive both the response shape here and whether the
@@ -677,10 +680,11 @@ try:
                 prompt_tokens_out = result["prompt_tokens"]
                 prompt_tokens_count = len(prompt_tokens_out) if prompt_tokens_out is not None else 0
             prompt_tokens_counts.append(prompt_tokens_count)
+            cached_tokens_counts.append(result.get("num_cached_tokens", 0))
 
             logprobs_content = None
             if sampling_params.return_log_probs:
-                token_logprobs = result.get('log_probs', [])
+                token_logprobs = result.get('generated_log_probs') or []
 
                 tokens_to_decode = [[tok] for tok in result["generated_tokens"]]
                 tokens = list(map(tokenizer.detokenize, tokens_to_decode))
@@ -799,6 +803,7 @@ try:
             request_idx += 1
 
         prompt_token_count = max(prompt_tokens_counts) if prompt_tokens_counts else 0
+        cached_token_count = max(cached_tokens_counts) if cached_tokens_counts else 0
         response = {
             "id": f"chatcmpl-{uuid.uuid4().hex}",
             "created": int(time.time()),
@@ -809,6 +814,7 @@ try:
                 "prompt_tokens": prompt_token_count,
                 "completion_tokens": total_completion_tokens,
                 "total_tokens": prompt_token_count + total_completion_tokens,
+                "prompt_tokens_details": {"cached_tokens": cached_token_count},
             },
         }
 

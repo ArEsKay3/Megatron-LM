@@ -219,6 +219,7 @@ class DataParallelInferenceCoordinator:
         # timestamps (positive int).  Missing entries are implicitly zero.
         self._hash_table: dict[int, dict[int, int]] = {}
         self._hash_assignment_counter = 0
+        self._generation_epoch = None
 
     def get_least_loaded_data_parallel_rank(self):
         """
@@ -374,6 +375,12 @@ class DataParallelInferenceCoordinator:
         ts = self._hash_assignment_counter
         for h in request_hashes:
             self._hash_table.setdefault(h, {})[rank_idx] = ts
+
+    def _set_generation_epoch(self, generation_epoch):
+        """Clear stale prefix ownership when model weights change."""
+        if generation_epoch != self._generation_epoch:
+            self._hash_table.clear()
+            self._generation_epoch = generation_epoch
 
     def _match_vector(self, hashes):
         """Return ``(match, recency)`` vectors of shape ``(n_ranks,)``.
@@ -545,6 +552,8 @@ class DataParallelInferenceCoordinator:
                         logging.warning("Coordinator: ignoring RESUME in state %s", self.state)
                         continue
                     self.state = self.CoordinatorState.PAUSED
+                elif header == Headers.SET_GENERATION_EPOCH:
+                    self._set_generation_epoch(deserialized_payload[1])
                 elif header == Headers.STOP:
                     good_states = (self.CoordinatorState.PAUSED, self.CoordinatorState.SUSPENDED)
                     if self.state not in good_states:

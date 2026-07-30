@@ -598,16 +598,14 @@ class DynamicInferenceContext(BaseInferenceContext):
 
         self.max_tokens = inference_config.max_tokens or self.DEFAULT_MAX_TOKENS
 
-        # Per-step upper bound on Mamba intermediate-state extractions, computed
-        # once here and shared with MambaMetadata and MambaSlotAllocator so the
-        # extraction scratch/metadata buffers and the budget accounting all agree.
-        # A step produces at most one block boundary per block_size_tokens of its
-        # token budget; the floor keeps buffers usable for tiny max_tokens and the
-        # +1 is a small safety margin.
-        self.max_mamba_intermediate_states_per_step = max(
-            MAX_INTERMEDIATE_OFFSETS_PER_REQUEST,
-            math.ceil(self.max_tokens / self.block_size_tokens) + 1,
-        )
+        # Per-step upper bound on Mamba intermediate-state extractions, shared with
+        # MambaMetadata and MambaSlotAllocator so scratch/metadata buffers and the
+        # budget accounting agree. Bounded both by the token budget (one block
+        # boundary per block_size_tokens) and by the request budget
+        # (MAX_INTERMEDIATE_OFFSETS_PER_REQUEST per request).
+        token_based_count = math.ceil(self.max_tokens / self.block_size_tokens)
+        request_based_count = MAX_INTERMEDIATE_OFFSETS_PER_REQUEST * self.max_requests
+        self.max_mamba_intermediate_states_per_step = min(token_based_count, request_based_count)
 
         assert self.max_tokens >= self.max_requests, (
             f"max_tokens ({self.max_tokens}) must be >= "
@@ -699,7 +697,6 @@ class DynamicInferenceContext(BaseInferenceContext):
                 sizing_distribution=inference_config.cuda_graph_sizing_distribution,
             )
         )
-
         # Allocate per-step dispatcher buffers upfront so update_metadata never
         # triggers an allocation inside a captured CUDA graph.
         #
@@ -2221,14 +2218,16 @@ class DynamicInferenceContext(BaseInferenceContext):
 
         self.batch_dimensions = batch_dimensions
 
-        best_graph = CUDAGraphBatchDimensionBuilder.match_graph_config(
-            batch_dimensions,
-            self.cuda_graph_batch_dimensions_list,
-            strict=self.is_hybrid_model,
-            ep_group=self.expert_model_parallel_group,
-            match_ep_token_counts=self._nccl_ep_dispatcher or self._training_ep_dispatcher,
-            ep_zmq_communicator=self._ep_zmq_communicator,
-        )
+        best_graph = None
+        if self.cuda_graphs_available or construct_graph_dimensions is not None:
+            best_graph = CUDAGraphBatchDimensionBuilder.match_graph_config(
+                batch_dimensions,
+                self.cuda_graph_batch_dimensions_list,
+                strict=self.is_hybrid_model,
+                ep_group=self.expert_model_parallel_group,
+                match_ep_token_counts=self._nccl_ep_dispatcher or self._training_ep_dispatcher,
+                ep_zmq_communicator=self._ep_zmq_communicator,
+            )
         self._using_cuda_graph_this_step = best_graph is not None
 
         if construct_graph_dimensions is not None:
@@ -2995,11 +2994,6 @@ class DynamicInferenceContext(BaseInferenceContext):
         num_matched_blocks = len(matched_block_ids)
         effective_kv_offset = req.finished_chunk_token_count + prefix_skip_tokens
 
-        # Track prefix cache hits.
-        if num_matched_blocks > 0:
-            self.prefix_cache_hits += 1
-            self.prefix_cache_blocks_matched += num_matched_blocks
-
         # Slice tokens to skip matched prefix
         this_round_tokens = req.remaining_prompt_tokens[prefix_skip_tokens:prefill_chunk_length]
 
@@ -3027,6 +3021,14 @@ class DynamicInferenceContext(BaseInferenceContext):
                 if matched_tensor is not None:
                     self.kv_block_allocator.block_ref_counts[matched_tensor] -= 1
                 raise BlockOverflowError(req.request_id)
+
+        # Track prefix cache hits only after allocation succeeds. num_cached_tokens
+        # accumulates across successful prefill chunks; a failed admission can be
+        # retried and must not count the same cached prefix twice.
+        if num_matched_blocks > 0:
+            self.prefix_cache_hits += 1
+            self.prefix_cache_blocks_matched += num_matched_blocks
+            req.num_cached_tokens += num_matched_blocks * self.block_size_tokens
 
         # Note that we decremented the total_request_count for the chunked prefill request
         # in update_requests, so setting current_id to the total_request_count will again
@@ -3167,7 +3169,11 @@ class DynamicInferenceContext(BaseInferenceContext):
         # multi-chunk prompt falls in a continuation chunk, and caching its Mamba
         # state is precisely what lets a later turn skip prefill on a hybrid model.
         # Mamba slot allocation / state restore above stays first-chunk-only.
-        if self.is_hybrid_model and self.mamba_slot_allocator is not None:
+        if (
+            self.is_hybrid_model
+            and self.mamba_slot_allocator is not None
+            and req.precomputed_block_hashes
+        ):
             self.mamba_slot_allocator.compute_and_store_offsets(
                 req,
                 current_id,
