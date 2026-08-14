@@ -662,7 +662,8 @@ class DynamicInferenceEngine(AbstractEngine):
         Returns:
             inference_coordinator_addresss (str): The network address of the central
                 `InferenceCoordinator`, which may not have the same port as what the user requested
-                with `inference_coordinator_port`.
+                with `inference_coordinator_port`. Returned on every rank, not just the
+                coordinator ranks, so that any rank can open a client to it.
         """
 
         assert HAVE_ZMQ, (
@@ -744,12 +745,22 @@ class DynamicInferenceEngine(AbstractEngine):
             mp_req_addr = None
 
         # Broadcast addresses to respective ranks.
+        #
+        # The DP broadcast alone leaves dp_addr set on the MP coordinators only. A
+        # DP group spans the ranks sharing a (tp_rank, pp_rank) coordinate, so only
+        # the group whose source is the DP coordinator carries a real address; the
+        # others broadcast the None their source holds. Carrying dp_addr through the
+        # MP broadcast too completes it, because mp_src is the MP coordinator and by
+        # then it has the address. The engine itself only dereferences dp_addr on the
+        # MP coordinator, but callers hosting a text generation frontend on every
+        # rank need it everywhere -- each frontend opens its own client to the
+        # coordinator.
         bcast = [dp_addr]
         torch.distributed.broadcast_object_list(bcast, src=dp_src, group=dp_group)
         [dp_addr] = bcast
-        bcast = [mp_req_addr]
+        bcast = [mp_req_addr, dp_addr]
         torch.distributed.broadcast_object_list(bcast, src=mp_src, group=mp_group)
-        [mp_req_addr] = bcast
+        [mp_req_addr, dp_addr] = bcast
 
         identity = f'mp-coord-{dp_rank}'
         if self.is_mp_coordinator:
