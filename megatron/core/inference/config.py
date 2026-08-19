@@ -114,6 +114,28 @@ class PrefixCachingCoordinatorPolicy(str, Enum):
     """Route to the rank with the fewest in-flight requests. Ignores prefix affinity."""
 
 
+class PrefixCachingCostPolicy(str, Enum):
+    """How LONGEST_PREFIX weighs prefix affinity against rank load.
+
+    SIMPLE_MULTIPLICATIVE — cost = remaining_prefill_blocks * (1 + pending). Reads as
+    "when would this rank finish the prefill it still owes", and affinity decides from
+    the first request. Its weakness is that a full cache hit makes remaining_blocks 0,
+    so the cost is 0 whatever the load: a saturated rank holding the prefix beats an
+    idle one. Harmless while every rank is near capacity, but in the drain phase at the
+    end of a batch it strands work on one rank while others sit idle.
+
+    LOAD_AWARE — score = prefix_fraction - beta * relative_load, taking the highest.
+    Both terms are normalized, so beta is dimensionless, and relative_load is measured
+    against the fleet mean so it vanishes when ranks are balanced: at saturation this
+    behaves like pure affinity, and only in the drain does load pull requests toward
+    idle ranks. Subtractive rather than multiplicative, so a full hit can never cancel
+    the load term. Follows vllm-project/production-stack's LoadAwareRouter.
+    """
+
+    SIMPLE_MULTIPLICATIVE = "simple_multiplicative"
+    LOAD_AWARE = "load_aware"
+
+
 def routes_on_prefix(policy) -> bool:
     """Whether `policy` needs per-request block hashes to make a routing decision.
 
@@ -155,10 +177,18 @@ class CudaGraphSizingDistribution(str, Enum):
     LINEAR — Include size-1 and size-2 graphs where applicable, linear spacing up until 256, and
     sparser linear spacing past 256. e.g. `[1, 2, 4] + range(8, 256, 8) + range(256, max+1, 16)`.
     Higher graph density at the top end.
+
+    HYBRID — EXPONENTIAL for prefill and mixed graphs, LINEAR for decode-only graphs. The two
+    serve different ranges: prefill token counts span the whole `cuda_graph_max_tokens` (thousands),
+    where log spacing keeps padding bounded at ~2x for a handful of graphs, while decode-only counts
+    are capped at `max_requests * (num_speculative_tokens + 1)` (tens), where halving is far too
+    coarse -- a 33-request step would pad up to a 64-request graph. Linear spacing there covers
+    every small request count densely for little extra capture cost.
     """
 
     EXPONENTIAL = "exponential"
     LINEAR = "linear"
+    HYBRID = "hybrid"
 
 
 class AsyncScheduleMode(str, Enum):
@@ -258,13 +288,15 @@ class InferenceConfig:
     """
 
     cuda_graph_sizing_distribution: CudaGraphSizingDistribution = (
-        CudaGraphSizingDistribution.EXPONENTIAL
+        CudaGraphSizingDistribution.HYBRID
     )
     """
-    How CUDA graph token counts are spaced. EXPONENTIAL (default) halves from
-    `cuda_graph_max_tokens` down to `tp_size` (log-spaced, ~log2(max_tokens) graphs).
-    LINEAR uses a range of linear strides (includes small graphs + mid-range linearity + 
-    a bigger step size at the top end).
+    How CUDA graph token counts are spaced. HYBRID (default) applies EXPONENTIAL to prefill and
+    mixed graphs and LINEAR to decode-only graphs, since the two cover ranges that differ by
+    orders of magnitude. EXPONENTIAL halves from `cuda_graph_max_tokens` down to `tp_size`
+    (log-spaced, ~log2(max_tokens) graphs). LINEAR uses a range of linear strides (includes small
+    graphs + mid-range linearity + a bigger step size at the top end). Set EXPONENTIAL or LINEAR
+    explicitly to apply one distribution to both families.
     """
 
     use_cuda_graphs_for_non_decode_steps: bool = True
@@ -360,6 +392,20 @@ class InferenceConfig:
     """Weight for prefix-aware scoring: score = alpha * match + (1 - alpha) * normalized_load.
     Higher alpha favors prefix cache hits; lower alpha favors load balance.
     Must be in [0, 1]. Only applies when enable_prefix_caching is True and using a coordinator.
+    Used by FIRST_PREFIX_BLOCK; LONGEST_PREFIX uses `prefix_caching_cost_policy` instead.
+    """
+
+    prefix_caching_cost_policy: PrefixCachingCostPolicy = PrefixCachingCostPolicy.LOAD_AWARE
+    """How LONGEST_PREFIX trades prefix affinity against rank load. See
+    `PrefixCachingCostPolicy`. SIMPLE_MULTIPLICATIVE reproduces the original
+    remaining_blocks * (1 + pending) cost.
+    """
+
+    prefix_caching_load_beta: float = 1.0
+    """Weight on the load penalty under `PrefixCachingCostPolicy.LOAD_AWARE`, in units of
+    "full cache hits per 100% above mean load". 0 disables the penalty (pure affinity);
+    1.0 means a rank at twice the fleet mean forfeits a whole prompt's worth of cache
+    credit. Only applies when prefix_caching_cost_policy is LOAD_AWARE.
     """
 
     prefix_caching_mamba_gb: Optional[float] = None

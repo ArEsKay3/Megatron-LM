@@ -16,6 +16,7 @@ import torch
 
 from megatron.core.inference.config import (
     PrefixCachingCoordinatorPolicy,
+    PrefixCachingCostPolicy,
     PrefixCachingEvictionPolicy,
 )
 from megatron.core.inference.headers import Headers, UnknownHeaderError
@@ -103,6 +104,10 @@ class DataParallelInferenceCoordinator:
             PrefixCachingCoordinatorPolicy.FIRST_PREFIX_BLOCK
         ),
         prefix_caching_routing_alpha: float = 0.5,
+        prefix_caching_cost_policy: PrefixCachingCostPolicy = (
+            PrefixCachingCostPolicy.LOAD_AWARE
+        ),
+        prefix_caching_load_beta: float = 1.0,
         prefix_caching_eviction_policy: PrefixCachingEvictionPolicy = (
             PrefixCachingEvictionPolicy.LRU
         ),
@@ -208,6 +213,8 @@ class DataParallelInferenceCoordinator:
         self.enable_prefix_caching = enable_prefix_caching
         self.prefix_caching_coordinator_policy = prefix_caching_coordinator_policy
         self.prefix_caching_routing_alpha = prefix_caching_routing_alpha
+        self.prefix_caching_cost_policy = prefix_caching_cost_policy
+        self.prefix_caching_load_beta = prefix_caching_load_beta
         self.max_requests = max_requests
         assert self.max_requests is not None and self.max_requests > 0
 
@@ -397,10 +404,32 @@ class DataParallelInferenceCoordinator:
             return self.get_least_loaded_data_parallel_rank()
 
         if self.prefix_caching_coordinator_policy == PrefixCachingCoordinatorPolicy.LONGEST_PREFIX:
-            # Cost of sending here: the prefill this rank would still have to
-            # compute, scaled by how contended it is. Multiplicative rather than a
-            # weighted sum because prefill saved on a rank that cannot start it
-            # promptly is not saved.
+            depth = self._prefix_depth_vector(request_hashes)
+            n_ranks = len(self._identities_list)
+
+            if self.prefix_caching_cost_policy == PrefixCachingCostPolicy.LOAD_AWARE:
+                # score = prefix_fraction - beta * relative_load, take the highest.
+                #
+                # Both terms are normalized, so beta is dimensionless. relative_load is
+                # measured against the mean, so it is 0 for every rank while they are
+                # balanced: at saturation this is pure affinity, and the penalty only
+                # grows as ranks diverge. Subtractive, so unlike the multiplicative cost
+                # a full hit cannot zero the load term and strand work on a busy rank.
+                #
+                # The mean is floored at 1 so a near-idle fleet does not turn a single
+                # in-flight request into a large relative load and thrash on noise.
+                fraction = depth.astype(np.float64) / max(len(request_hashes), 1)
+                mean_load = float(self._pending_counts.mean()) if n_ranks else 0.0
+                relative_load = (self._pending_counts - mean_load) / max(1.0, mean_load)
+                score = fraction - self.prefix_caching_load_beta * relative_load
+                # Tiebreak: highest score, then least loaded, then lowest rank index.
+                order = np.lexsort((np.arange(n_ranks), self._pending_counts, -score))
+                return self._identities_list[int(order[0])]
+
+            # SIMPLE_MULTIPLICATIVE: cost of sending here is the prefill this rank
+            # would still have to compute, scaled by how contended it is.
+            # Multiplicative rather than a weighted sum because prefill saved on a rank
+            # that cannot start it promptly is not saved.
             #
             # 1 + load, so an idle rank is charged for the prefill it would still
             # have to do rather than scoring zero on any prefix. Reading it as
@@ -408,11 +437,9 @@ class DataParallelInferenceCoordinator:
             # the product approximates when its prefill would finish. Affinity
             # therefore decides from the first request, including while every rank
             # is idle.
-            depth = self._prefix_depth_vector(request_hashes)
             remaining_blocks = np.maximum(0, len(request_hashes) - depth)
             cost = remaining_blocks.astype(np.float64) * (1.0 + self._pending_counts)
             # Tiebreak: lowest cost, then least loaded, then lowest rank index.
-            n_ranks = len(self._identities_list)
             order = np.lexsort((np.arange(n_ranks), self._pending_counts, cost))
             return self._identities_list[int(order[0])]
 
@@ -628,6 +655,10 @@ class DataParallelInferenceCoordinator:
             PrefixCachingCoordinatorPolicy.FIRST_PREFIX_BLOCK
         ),
         prefix_caching_routing_alpha: float = 0.5,
+        prefix_caching_cost_policy: PrefixCachingCostPolicy = (
+            PrefixCachingCostPolicy.LOAD_AWARE
+        ),
+        prefix_caching_load_beta: float = 1.0,
         prefix_caching_eviction_policy: PrefixCachingEvictionPolicy = (
             PrefixCachingEvictionPolicy.LRU
         ),
@@ -666,6 +697,8 @@ class DataParallelInferenceCoordinator:
             enable_prefix_caching=enable_prefix_caching,
             prefix_caching_coordinator_policy=prefix_caching_coordinator_policy,
             prefix_caching_routing_alpha=prefix_caching_routing_alpha,
+            prefix_caching_cost_policy=prefix_caching_cost_policy,
+            prefix_caching_load_beta=prefix_caching_load_beta,
             prefix_caching_eviction_policy=prefix_caching_eviction_policy,
             prefix_cache_ttl_seconds=prefix_cache_ttl_seconds,
             schedule_output_path=schedule_output_path,
