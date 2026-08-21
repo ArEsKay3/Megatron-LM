@@ -284,6 +284,17 @@ def start_text_gen_server(
             f"Started text gen frontend replica {i+1}/{num_replicas} "
             f"on port {server_port} (PID: {p.pid})"
         )
+        # print(), not logger.info(): this logger sits above INFO outside the
+        # temp_log_level block, so the roster never reached the driver log --
+        # leaving "how many replicas actually started, and on which port"
+        # unanswerable. The pid here matches the pid= in [FE-EV], so the roster
+        # and the per-request events can be reconciled exactly; the port makes
+        # the now per-DP-group frontends distinguishable.
+        print(
+            f"[FE-REPLICA] started {i+1}/{num_replicas} pid={p.pid} "
+            f"host={socket.gethostname()} port={server_port}",
+            flush=True,
+        )
 
     return f"http://{hostname or socket.gethostname()}:{server_port}"
 

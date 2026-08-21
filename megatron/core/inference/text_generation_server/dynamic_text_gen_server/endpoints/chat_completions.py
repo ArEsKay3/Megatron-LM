@@ -1,8 +1,11 @@
 # Copyright (c) 2025, NVIDIA CORPORATION. All rights reserved.
 
 import asyncio
+import itertools
 import json
 import logging
+import math
+import os
 import time
 import traceback
 import uuid
@@ -26,6 +29,47 @@ from ..incremental_detokenizer import HuggingFaceFastIncrementalDetokenizer
 from ..openai_streaming import openai_stream
 
 logger = logging.getLogger(__name__)
+
+# --- [FE-EV] per-event request tracing -----------------------------------
+# Every counter change emits its own line with a wall-clock stamp instead of a
+# periodic aggregate. The previous aggregate was sampled only when a request
+# completed, which biased it toward busy moments and made it non-comparable
+# with the coordinator's counters; it also folded tokenizer queue wait and
+# tokenizer service time into one number. Events are emitted raw and
+# un-aggregated so they can be joined on `ts` across processes.
+#
+# Event vocabulary (one line each):
+#   recv     request arrived at the blueprint
+#   tok_enq  handed to the single-worker tokenize executor  (queue wait starts)
+#   tok_svc  emitted ON the executor thread: SERVICE time only, plus ntok/nmsg
+#   tok_deq  executor future resolved                        (queue wait ends)
+#   gen_beg  submitted to the engine, awaiting gather
+#   gen_end  all n engine replies received
+#   done     response finished (every exit path, incl. errors)
+# h/t/g are the handler/tokenize/generate depths *after* the change.
+# Set NRL_FE_EVENTS=0 to silence.
+_FE_EV = os.environ.get("NRL_FE_EVENTS", "1") not in ("0", "false", "")
+_fe_gauge = {"handler": 0, "tokenize": 0, "generate": 0}
+_fe_rid = itertools.count(1)
+
+# [FE-REQ] One-line summary per inbound request. Expensive at scale: 31k lines
+# / 24 MB on one SWE run. Default OFF; set NRL_FE_REQ_SUMMARY=1 to enable.
+_FE_REQ_SUMMARY = os.environ.get("NRL_FE_REQ_SUMMARY", "0") not in ("0", "false", "")
+
+
+def _ev(ev, rid, **kv):
+    """Emit one event line. print(), not logging: the frontend replica
+    processes run with the root logger above INFO, so logging.info is dropped."""
+    if not _FE_EV:
+        return
+    extra = "".join(f" {k}={v}" for k, v in kv.items())
+    print(
+        f"[FE-EV] ts={time.time():.4f} pid={os.getpid()} rid={rid} ev={ev}"
+        f" h={_fe_gauge['handler']} t={_fe_gauge['tokenize']} g={_fe_gauge['generate']}"
+        f"{extra}",
+        flush=True,
+    )
+
 
 # pylint: disable=line-too-long
 
@@ -366,14 +410,20 @@ def _replace_prefix_tokens(
 
 
 def _apply_chat_template_sync(
-    tokenizer, messages, tools, chat_template_kwargs, add_generation_prompt=True
+    tokenizer, messages, tools, chat_template_kwargs, add_generation_prompt=True, _fe_rid=0
 ):
     """Apply the chat template and coerce to `list[int]`, for use in a worker thread.
 
     The coercion runs here too: it walks every token, so leaving it on the event loop
     would keep part of the stall this offload exists to remove.
     """
-    return _coerce_to_token_id_list(
+    # [FE-EV] This body runs ON the executor thread, so the elapsed time here is
+    # tokenizer SERVICE time with no queue wait in it. Queue wait is the gap
+    # between this request's tok_enq and its tok_svc. ntok/nmsg are reported
+    # alongside because service time is expected to scale with them (the Jinja
+    # template re-renders the whole conversation every turn).
+    _t0 = time.perf_counter()
+    _ids = _coerce_to_token_id_list(
         tokenizer.apply_chat_template(
             messages,
             tokenize=True,
@@ -382,6 +432,16 @@ def _apply_chat_template_sync(
             **chat_template_kwargs,
         )
     )
+    _ev(
+        "tok_svc",
+        _fe_rid,
+        svc_ms=f"{(time.perf_counter() - _t0) * 1000:.2f}",
+        ntok=len(_ids),
+        nmsg=len(messages) if messages is not None else -1,
+        ntools=len(tools) if tools else 0,
+        agp=int(bool(add_generation_prompt)),
+    )
+    return _ids
 
 
 def _coerce_to_token_id_list(result):
@@ -420,11 +480,157 @@ try:
 except ImportError:
     HAVE_ORJSON = False
 
+def _logprob_null_audit(response, payload, encoder):  # pragma: no cover - diagnostic
+    """[LOGPROB-AUDIT] Compare logprob arrays before and after serialization.
+
+    Two independent logprob arrays leave this endpoint, built from two different
+    engine keys, and only one of them is what NeMo-Gym consumes:
+
+        message["generation_log_probs"]        <- result["generated_log_probs"]   (consumed)
+        choice["logprobs"]["content"][j]       <- result["log_probs"]             (not consumed)
+
+    A null in the consumed array fails downstream as
+    "generation_log_probs.N: Input should be a valid number", by which point the
+    response is gone and only an index survives.
+
+    A null in the serialized output is ambiguous on its own: orjson emits NaN,
+    Infinity and -Infinity as null (per its docs), so a null can mean the engine
+    produced a non-finite float OR a literal None. This audit resolves that by
+    reporting the *pre-serialization* Python value -- its repr and its type --
+    next to the post-serialization null. repr 'nan'/'-inf' means the engine
+    produced a non-finite float and the encoder converted it; repr 'None' means
+    the engine emitted None and the encoder is not implicated.
+
+    Fires only when something is actually wrong, so it costs one walk of the
+    arrays per request and prints nothing on the happy path.
+    """
+    try:
+        def scan(seq):
+            bad = []
+            if not isinstance(seq, list):
+                return bad
+            for i, v in enumerate(seq):
+                if v is None or (isinstance(v, float) and not math.isfinite(v)):
+                    bad.append(i)
+            return bad
+
+        # Pre-serialization view of the Python objects.
+        pre = []
+        for ci, ch in enumerate(response.get("choices") or []):
+            msg = ch.get("message") or {}
+            pre.append(
+                {
+                    "choice": ci,
+                    "gen": scan(msg.get("generation_log_probs")),
+                    "gen_len": len(msg.get("generation_log_probs") or []),
+                    "content": scan(
+                        [
+                            e.get("logprob")
+                            for e in ((ch.get("logprobs") or {}).get("content") or [])
+                        ]
+                    ),
+                    "finish_reason": ch.get("finish_reason"),
+                    "n_gen_tokens": len(msg.get("generation_token_ids") or []),
+                }
+            )
+
+        # Post-serialization view: re-parse exactly what goes on the wire.
+        post = []
+        if payload is not None:
+            parsed = json.loads(
+                payload.decode() if isinstance(payload, (bytes, bytearray)) else payload
+            )
+            for ci, ch in enumerate(parsed.get("choices") or []):
+                msg = ch.get("message") or {}
+                post.append(
+                    {
+                        "choice": ci,
+                        "gen": scan(msg.get("generation_log_probs")),
+                        "content": scan(
+                            [
+                                e.get("logprob")
+                                for e in ((ch.get("logprobs") or {}).get("content") or [])
+                            ]
+                        ),
+                    }
+                )
+
+        interesting = any(p["gen"] or p["content"] for p in pre) or any(
+            p["gen"] or p["content"] for p in post
+        )
+        if not interesting:
+            return
+
+        print(
+            f"[LOGPROB-AUDIT] pid={os.getpid()} encoder={encoder} choices={len(pre)}",
+            flush=True,
+        )
+        for p in pre:
+            ci = p["choice"]
+            q = next((x for x in post if x["choice"] == ci), {"gen": [], "content": []})
+            print(
+                f"[LOGPROB-AUDIT]   choice={ci} finish_reason={p['finish_reason']!r} "
+                f"n_gen_tokens={p['n_gen_tokens']} gen_len={p['gen_len']} "
+                f"pre.generation_log_probs={p['gen'][:10]} "
+                f"post.generation_log_probs={q['gen'][:10]} "
+                f"pre.logprobs.content={p['content'][:10]} "
+                f"post.logprobs.content={q['content'][:10]}",
+                flush=True,
+            )
+            # The decisive detail: what the value was BEFORE the encoder saw it.
+            msg = (response.get("choices") or [])[ci].get("message") or {}
+            seq = msg.get("generation_log_probs") or []
+            for i in (p["gen"] or q["gen"])[:5]:
+                if i < len(seq):
+                    v = seq[i]
+                    gt = msg.get("generation_token_ids") or []
+                    print(
+                        f"[LOGPROB-AUDIT]     idx={i} pre_value={v!r} pre_type={type(v).__name__} "
+                        f"token_id={gt[i] if i < len(gt) else None} "
+                        f"neighbors={[repr(x) for x in seq[max(0, i - 2):i + 3]]}",
+                        flush=True,
+                    )
+    except Exception as exc:  # noqa: BLE001 - diagnostic must never break a response
+        print(f"[LOGPROB-AUDIT] audit failed: {type(exc).__name__}: {exc}", flush=True)
+
+
+# [ORJSON] Which encoder serializes the chat response, printed once per replica.
+# This decides how a non-finite logprob leaves the process: orjson emits
+# "Nan, Infinity, and -Infinity ... as null" (its docs), which arrives at Gym as
+# None and fails pydantic as "generation_log_probs.N: Input should be a valid
+# number". stdlib jsonify instead emits a bare NaN literal, which json.loads
+# accepts as float('nan') and pydantic accepts as a valid float. So the null-vs-NaN
+# question upstream is decided entirely by this flag.
+print(f"[ORJSON] pid={os.getpid()} HAVE_ORJSON={HAVE_ORJSON}", flush=True)
+
+
 
 try:
-    from quart import Blueprint, Response, current_app, jsonify, request
+    from quart import Blueprint, Response, current_app, g, jsonify, request
 
     bp = Blueprint('chat_completions_api', __name__)
+
+    @bp.before_request
+    async def _fe_before_request():
+        g._fe_rid = next(_fe_rid)
+        g._fe_t0 = time.perf_counter()
+        _fe_gauge["handler"] += 1
+        _ev("recv", g._fe_rid)
+
+    @bp.teardown_request
+    async def _fe_teardown_request(exc):
+        # teardown runs on every exit path -- success, early 4xx/5xx return and
+        # exception -- so the handler gauge cannot leak.
+        rid = getattr(g, "_fe_rid", None)
+        if rid is None:
+            return
+        _fe_gauge["handler"] -= 1
+        _ev(
+            "done",
+            rid,
+            total_ms=f"{(time.perf_counter() - g._fe_t0) * 1000:.1f}",
+            err=1 if exc is not None else 0,
+        )
 
     def apply_parsers(
         message_text, tools, parsers_list, tools_requested, chat_template_kwargs=None
@@ -467,6 +673,36 @@ try:
         coordinator_policy = current_app.config.get('prefix_caching_coordinator_policy')
 
         req = await request.get_json()
+
+        # [FE-REQ] see _FE_DUMP_N above. Emitted before any parsing so a request
+        # that later 400s or throws still shows up.
+        try:
+            _rid_req = getattr(g, "_fe_rid", 0)
+            _msgs = req.get("messages") or []
+            if _FE_REQ_SUMMARY:
+                print(
+                    f"[FE-REQ] pid={os.getpid()} rid={_rid_req}"
+                    f" keys={sorted(req.keys())}"
+                    f" nmsg={len(_msgs)}"
+                    f" roles={[m.get('role') for m in _msgs][:16]}"
+                    f" ntools={len(req.get('tools') or [])}"
+                    f" tool_choice={req.get('tool_choice')!r}"
+                    f" parallel_tool_calls={req.get('parallel_tool_calls')!r}"
+                    f" chat_template_kwargs={req.get('chat_template_kwargs')!r}"
+                    f" temperature={req.get('temperature')!r}"
+                    f" top_p={req.get('top_p')!r} top_k={req.get('top_k')!r}"
+                    f" seed={req.get('seed')!r}"
+                    f" max_tokens={req.get('max_tokens')!r}"
+                    f" max_completion_tokens={req.get('max_completion_tokens')!r}"
+                    f" stop={req.get('stop')!r} stream={req.get('stream')!r}"
+                    f" logprobs={req.get('logprobs')!r}"
+                    f" top_logprobs={req.get('top_logprobs')!r}"
+                    f" chars={sum(len(str(m.get('content') or '')) for m in _msgs)}",
+                    flush=True,
+                )
+        except Exception as _e:
+            print(f"[FE-REQ] dump failed: {type(_e).__name__}: {_e}", flush=True)
+
         tools = req.get("tools", None)
         tool_choice = req.get("tool_choice", None)
         parallel_tool_calls = req.get("parallel_tool_calls", True)
@@ -491,16 +727,31 @@ try:
                 hasattr(tokenizer, 'apply_chat_template')
                 and getattr(tokenizer, "chat_template", None) is not None
             ):
-                prompt_tokens = await asyncio.get_running_loop().run_in_executor(
-                    current_app.config['tokenize_executor'],
-                    partial(
-                        _apply_chat_template_sync,
-                        current_app.config['tokenize_tokenizer'],
-                        template_messages,
-                        template_tools,
-                        chat_template_kwargs,
-                    ),
-                )
+                # [FE-EV] tok_enq -> tok_deq spans queue wait + service; the
+                # tok_svc event emitted inside the executor isolates service.
+                _fe_rid_cur = getattr(g, "_fe_rid", 0)
+                _fe_gauge["tokenize"] += 1
+                _ev("tok_enq", _fe_rid_cur)
+                _fe_tok_t0 = time.perf_counter()
+                try:
+                    prompt_tokens = await asyncio.get_running_loop().run_in_executor(
+                        current_app.config['tokenize_executor'],
+                        partial(
+                            _apply_chat_template_sync,
+                            current_app.config['tokenize_tokenizer'],
+                            template_messages,
+                            template_tools,
+                            chat_template_kwargs,
+                            _fe_rid=_fe_rid_cur,
+                        ),
+                    )
+                finally:
+                    _fe_gauge["tokenize"] -= 1
+                    _ev(
+                        "tok_deq",
+                        _fe_rid_cur,
+                        wait_ms=f"{(time.perf_counter() - _fe_tok_t0) * 1000:.1f}",
+                    )
 
                 if req.get("prevent_retokenization", True):
                     # If we are avoiding retokenization, we need to replace some prompt tokens with the prompt/generation tokens from the previous generation
@@ -540,19 +791,35 @@ try:
                         ]
 
                         # Get the templated tokenization of just the previous generation
-                        retokenized_previous_turn_token_ids = (
-                            await asyncio.get_running_loop().run_in_executor(
-                                current_app.config['tokenize_executor'],
-                                partial(
-                                    _apply_chat_template_sync,
-                                    current_app.config['tokenize_tokenizer'],
-                                    messages_to_last_assistant_message,
-                                    template_tools,
-                                    chat_template_kwargs,
-                                    add_generation_prompt=False,
-                                ),
+                        # [FE-EV] second trip through the same single-worker
+                        # executor, so it queues behind the same thread.
+                        _fe_rid2 = getattr(g, "_fe_rid", 0)
+                        _fe_gauge["tokenize"] += 1
+                        _ev("tok_enq", _fe_rid2, pass_=2)
+                        _fe_tok2_t0 = time.perf_counter()
+                        try:
+                            retokenized_previous_turn_token_ids = (
+                                await asyncio.get_running_loop().run_in_executor(
+                                    current_app.config['tokenize_executor'],
+                                    partial(
+                                        _apply_chat_template_sync,
+                                        current_app.config['tokenize_tokenizer'],
+                                        messages_to_last_assistant_message,
+                                        template_tools,
+                                        chat_template_kwargs,
+                                        add_generation_prompt=False,
+                                        _fe_rid=_fe_rid2,
+                                    ),
+                                )
                             )
-                        )
+                        finally:
+                            _fe_gauge["tokenize"] -= 1
+                            _ev(
+                                "tok_deq",
+                                _fe_rid2,
+                                pass_=2,
+                                wait_ms=f"{(time.perf_counter() - _fe_tok2_t0) * 1000:.1f}",
+                            )
 
                         # Replace the prefix tokens with the tokens from the previous generation.
                         # If prior token IDs are unavailable, fall back to normal retokenized prompt
@@ -701,11 +968,25 @@ try:
         if current_app.config['verbose']:
             start_time = time.perf_counter()
 
+        # [FE-EV] generate stage: submitted -> all n engine replies back.
+        # n is logged so HTTP-level and engine-level counts convert cleanly
+        # (one HTTP request fans out to n engine requests).
+        _fe_rid_gen = getattr(g, "_fe_rid", 0)
+        _fe_gauge["generate"] += 1
+        _ev("gen_beg", _fe_rid_gen, n=len(tasks), ntok=len(prompt_tokens))
+        _fe_gen_t0 = time.perf_counter()
         try:
             batch_results = await asyncio.gather(*tasks)
         except Exception as e:
             logger.error(f"Error during inference: {e}")
             return Response(f"Error during inference: {e}", status=500)
+        finally:
+            _fe_gauge["generate"] -= 1
+            _ev(
+                "gen_end",
+                _fe_rid_gen,
+                gen_ms=f"{(time.perf_counter() - _fe_gen_t0) * 1000:.1f}",
+            )
 
         if current_app.config['verbose']:
             logging.info(
@@ -806,6 +1087,36 @@ try:
                             "bytes": list(tok.encode("utf-8")),
                             "top_logprobs": top_logprobs_list,
                         }
+                    )
+
+                # [FE-LOGPROB] Non-finite logprobs at the point of creation.
+                # Test for NaN/inf, NOT None: `lp` here is still a Python float, and
+                # the response is serialized with orjson (see the Response(...) below),
+                # which per its docs emits "Nan, Infinity, and -Infinity ... as null".
+                # So a NaN produced by the engine leaves this process as JSON null,
+                # arrives at Gym as None, passes untouched through the
+                # return_tokenized_data path, and finally fails as a pydantic error
+                # "generation_log_probs.N: Input should be a valid number" -- by which
+                # point the request is gone and only an index survives. That 500 then
+                # becomes stream_error in the collector and strands every prompt group
+                # not yet yielded, forcing a wholesale batch re-dispatch. Checking for
+                # None alone would never fire here. Diagnostic only.
+                _bad_idx = [
+                    i
+                    for i, e in enumerate(logprobs_content)
+                    if e["logprob"] is None
+                    or (isinstance(e["logprob"], float) and not math.isfinite(e["logprob"]))
+                ]
+                if _bad_idx:
+                    print(
+                        f"[FE-LOGPROB] pid={os.getpid()} bad={len(_bad_idx)}/"
+                        f"{len(logprobs_content)} idx={_bad_idx[:10]} "
+                        f"vals={[logprobs_content[i]['logprob'] for i in _bad_idx[:5]]!r} "
+                        f"n_tokens={len(tokens)} n_log_probs={len(token_logprobs)} "
+                        f"n_gen_tokens={len(result.get('generated_tokens') or [])} "
+                        f"finish_reason={result.get('finish_reason')!r} "
+                        f"cached_tokens={result.get('num_cached_tokens', 0)}",
+                        flush=True,
                     )
 
             metadata = {}
@@ -917,8 +1228,14 @@ try:
 
         if HAVE_ORJSON:
             # Use orjson for faster serialization
-            return Response(orjson.dumps(response), mimetype="application/json")
+            _payload = orjson.dumps(response)
+            # [LOGPROB-AUDIT] Audit the exact bytes going on the wire against the
+            # Python objects that produced them. Only prints when a null or
+            # non-finite value is present on either side.
+            _logprob_null_audit(response, _payload, "orjson")
+            return Response(_payload, mimetype="application/json")
         else:
+            _logprob_null_audit(response, None, "jsonify")
             return jsonify(response)
 
 except ImportError as e:

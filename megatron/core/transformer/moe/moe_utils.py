@@ -1220,6 +1220,26 @@ def get_updated_expert_bias(
             )
 
         # All Reduce Across TPxCPxDP group
+        # [DEBUG] Free-memory snapshot at the exact op that OOMs (NRL_GPU_MEM_DEBUG=1).
+        # Shows whether the GPU is genuinely full at this instant (real OOM) vs a
+        # deferred/sticky CUDA error surfacing here with headroom to spare.
+        import os as _os
+
+        if _os.environ.get("NRL_GPU_MEM_DEBUG", "0") == "1" and torch.cuda.is_available():
+            _dev = torch.cuda.current_device()
+            _free, _total = torch.cuda.mem_get_info(_dev)
+            _rank = (
+                torch.distributed.get_rank() if torch.distributed.is_initialized() else -1
+            )
+            print(
+                f"[GPU_MEM] rank={_rank} tag=before_expert_bias_all_reduce "
+                f"reserved={torch.cuda.memory_reserved(_dev) / 1e9:.2f}GB "
+                f"max_reserved={torch.cuda.max_memory_reserved(_dev) / 1e9:.2f}GB "
+                f"free={_free / 1e9:.2f}GB total={_total / 1e9:.2f}GB "
+                f"non_torch={(_total - _free - torch.cuda.memory_reserved(_dev)) / 1e9:.2f}GB "
+                f"tokens_per_expert.shape={tuple(tokens_per_expert.shape)}",
+                flush=True,
+            )
         torch.distributed.all_reduce(tokens_per_expert, group=tp_dp_cp_group)
         average_tokens = tokens_per_expert.sum(dim=-1, keepdim=True) / tokens_per_expert.shape[-1]
         offset = average_tokens - tokens_per_expert

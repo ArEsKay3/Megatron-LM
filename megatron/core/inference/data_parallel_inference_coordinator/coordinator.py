@@ -4,10 +4,11 @@ import errno
 import faulthandler
 import json
 import logging
+import os
 import signal
 import socket
 import time
-from collections import deque
+from collections import defaultdict, deque
 from multiprocessing import Event
 from multiprocessing.connection import Connection
 
@@ -587,6 +588,30 @@ class DataParallelInferenceCoordinator:
         dispatches to the handler registered for it (see handlers.py).
         A handler that returns a truthy value stops the loop.
         """
+        # --- [COORD-TELEM] single-thread throughput instrumentation ----------
+        # This ROUTER loop is single-threaded: every submit/reply/partial from
+        # every engine and client is serviced here one at a time. If it cannot
+        # keep up, messages back up in the ZMQ socket *before* any engine sees
+        # them -- invisible to the engine's own `waiting` count. These counters
+        # prove or disprove that:
+        #   busy%        : fraction of wall-time spent in handlers (vs blocked
+        #                  on recv). ~100% => saturated => the coordinator IS
+        #                  the bottleneck starving the engines.
+        #   backlog_recv%: fraction of recvs that returned with ~no wait, i.e.
+        #                  a message was already queued => socket is backing up.
+        #   per-header    : count and mean service time by message type, so you
+        #                  can see whether replies/partials (not submits) are
+        #                  eating the loop.
+        # Set NRL_COORD_TELEM_S=0 to disable; default reports every 5s.
+        _telem_s = float(os.environ.get("NRL_COORD_TELEM_S", "5") or 0)
+        _clock = time.perf_counter
+        _win_start = _clock()
+        _busy = 0.0
+        _n_msg = 0
+        _n_backlog = 0
+        _hdr_count = defaultdict(int)
+        _hdr_busy = defaultdict(float)
+
         # Todo [Siddharth]: Make this more robust to handle invalid messages.
         while True:
             # Messages are one or more frames. frames[0] is the metadata frame:
@@ -594,20 +619,75 @@ class DataParallelInferenceCoordinator:
             # Any later frames are opaque payload bodies, forwarded without ever
             # being decoded here -- that is what keeps this loop's cost
             # independent of prompt length.
+            _t_recv = _clock()
             sender_identity, *frames = self.router_socket.recv_multipart()
+            _t_got = _clock()
 
+            stop = False
             # An empty payload is a data parallel rank (re-)registering itself.
             if frames[0] == b"":
                 self._handle_rank_registration(sender_identity)
-                continue
+                _hdr_name = "REGISTER"
+            else:
+                metadata = msgpack.unpackb(frames[0], raw=False)
+                header = Headers(metadata[0])
 
-            metadata = msgpack.unpackb(frames[0], raw=False)
-            header = Headers(metadata[0])
+                handler = self._handlers.get(header)
+                if handler is None:
+                    raise UnknownHeaderError(header)
+                _hdr_name = header.name
+                stop = bool(handler(self, sender_identity, metadata, frames[1:]))
 
-            handler = self._handlers.get(header)
-            if handler is None:
-                raise UnknownHeaderError(header)
-            if handler(self, sender_identity, metadata, frames[1:]):
+            # --- accumulate telemetry for this message ---
+            _t_done = _clock()
+            _service = _t_done - _t_got
+            _busy += _service
+            _n_msg += 1
+            if (_t_got - _t_recv) < 1e-4:  # <0.1ms blocked => msg already queued
+                _n_backlog += 1
+            _hdr_count[_hdr_name] += 1
+            _hdr_busy[_hdr_name] += _service
+
+            if _telem_s and (_t_done - _win_start) >= _telem_s:
+                _elapsed = _t_done - _win_start
+                _pending = self._pending_counts
+                _detail = ", ".join(
+                    "%s:%d@%.0fus" % (h, c, 1e6 * _hdr_busy[h] / max(c, 1))
+                    for h, c in sorted(_hdr_count.items(), key=lambda kv: -_hdr_busy[kv[0]])
+                )
+                # print(), not logging.info(): this process runs with the root
+                # logger at WARNING (only text_generation_server's startup lines
+                # get through, via temp_log_level), so logging.info is silently
+                # dropped and the telemetry never reaches the driver log.
+                print(
+                    "[COORD-TELEM] win=%.1fs msgs=%d (%.0f/s) busy=%.1f%% "
+                    "backlog_recv=%.0f%% engines=%d engine_inflight=%d "
+                    "(busiest=%d) | %s"
+                    % (
+                        _elapsed,
+                        _n_msg,
+                        _n_msg / _elapsed,
+                        100.0 * _busy / _elapsed,
+                        100.0 * _n_backlog / max(_n_msg, 1),
+                        # Number of engines actually registered with the
+                        # coordinator -- the authoritative DP count, which
+                        # `num_replicas = max(get_pg_size(dp), 4)` is supposed
+                        # to mirror. Printing it makes the two reconcilable.
+                        int(_pending.size),
+                        int(_pending.sum()) if _pending.size else 0,
+                        int(_pending.max()) if _pending.size else 0,
+                        _detail,
+                    ),
+                    flush=True,
+                )
+                _win_start = _clock()
+                _busy = 0.0
+                _n_msg = 0
+                _n_backlog = 0
+                _hdr_count.clear()
+                _hdr_busy.clear()
+
+            if stop:
                 break
 
     def _handle_rank_registration(self, sender_identity):

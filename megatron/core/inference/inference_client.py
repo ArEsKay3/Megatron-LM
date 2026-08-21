@@ -3,6 +3,8 @@
 import asyncio
 import functools
 import logging
+import os
+import socket as _socket
 import time
 from typing import List, Optional, Union
 
@@ -88,6 +90,21 @@ class InferenceClient:
         self.streams: dict[int, AsyncStream[dict]] = {}
         self.aborted_request_ids: set[int] = set()
 
+        # --- [FE-INFLIGHT] per-replica offered-load telemetry ----------------
+        # Each frontend replica is its own process with its own InferenceClient,
+        # so this counts the requests THIS replica currently has outstanding at
+        # the engines (submitted, awaiting ENGINE_REPLY). Summing the latest
+        # value across all host+pid tags gives the total offered concurrency,
+        # to compare against the engine's own active count. Also reports mean
+        # frontend->reply latency (already computed per request below), which
+        # separates "faster service" from "less offered load".
+        self._telem_s = float(os.environ.get("NRL_FE_TELEM_S", "5") or 0)
+        self._telem_tag = "%s/%d" % (_socket.gethostname(), os.getpid())
+        self._telem_completed = 0
+        self._telem_latency_sum = 0.0
+        self._telem_max_inflight = 0
+        self._telem_task = None
+
     def add_request(
         self,
         prompt: Union[str, List[int]],
@@ -120,6 +137,7 @@ class InferenceClient:
         assert request_id not in self.completion_futures
         self.completion_futures[request_id] = asyncio.get_running_loop().create_future()
         self.request_submission_times[request_id] = time.perf_counter()
+        self._telem_note_inflight()
         return self.completion_futures[request_id]
 
     def _submit_frames(self, request_id, prompt, sampling_params, block_hashes=None):
@@ -200,7 +218,45 @@ class InferenceClient:
         )
         self.streams[request_id] = stream
         self.request_submission_times[request_id] = time.perf_counter()
+        self._telem_note_inflight()
         return stream
+
+    def _telem_note_inflight(self):
+        """Track the peak concurrent outstanding-request count for this replica."""
+        inflight = len(self.completion_futures) + len(self.streams)
+        if inflight > self._telem_max_inflight:
+            self._telem_max_inflight = inflight
+
+    async def _telem_reporter(self):
+        """Periodically log this replica's offered load: current + peak in-flight
+        request count and mean frontend->reply latency over the window."""
+        while True:
+            await asyncio.sleep(self._telem_s)
+            inflight = len(self.completion_futures) + len(self.streams)
+            done = self._telem_completed
+            mean_lat = (self._telem_latency_sum / done) if done else 0.0
+            # print(), not logging.info(): the frontend replica processes run
+            # with the root logger at WARNING, so logging.info is dropped before
+            # it reaches the driver log.
+            print(
+                "[FE-INFLIGHT] tag=%s inflight=%d peak=%d completed=%d (%.0f/s) "
+                "mean_latency=%.2fs fut=%d streams=%d"
+                % (
+                    self._telem_tag,
+                    inflight,
+                    self._telem_max_inflight,
+                    done,
+                    done / self._telem_s if self._telem_s else 0.0,
+                    mean_lat,
+                    len(self.completion_futures),
+                    len(self.streams),
+                ),
+                flush=True,
+            )
+            # Reset window; peak restarts from the current occupancy.
+            self._telem_completed = 0
+            self._telem_latency_sum = 0.0
+            self._telem_max_inflight = inflight
 
     @trace_async_exceptions
     async def _recv_task(self):
@@ -230,6 +286,10 @@ class InferenceClient:
                     submitted = self.request_submission_times.pop(request_id, None)
                     if submitted is not None:
                         reply['latency'] = time.perf_counter() - submitted
+                        # [FE-INFLIGHT] one ENGINE_REPLY == one completed request
+                        # (streaming final + non-streaming both land here).
+                        self._telem_completed += 1
+                        self._telem_latency_sum += reply['latency']
                     # Streaming path: deliver final reply + sentinel and stop.
                     if request_id in self.streams:
                         stream = self.streams.pop(request_id)
@@ -292,6 +352,8 @@ class InferenceClient:
         self._loop = get_asyncio_loop(loop)
         self._connect_with_inference_coordinator(connect_timeout_seconds)
         self.listener_task = self._loop.create_task(self._recv_task())
+        if self._telem_s:
+            self._telem_task = self._loop.create_task(self._telem_reporter())
 
     def _send_signal_to_engines(self, signal, *args):
         """
@@ -378,6 +440,8 @@ class InferenceClient:
         """
         if hasattr(self, 'listener_task') and not self.listener_task.done():
             self.listener_task.cancel()
+        if getattr(self, '_telem_task', None) is not None and not self._telem_task.done():
+            self._telem_task.cancel()
         # Wake up any listeners.
         for future in self.completion_futures.values():
             if not future.done():
