@@ -173,7 +173,30 @@ class FlashInferSampling(Sampling):
         top_k_safe = top_k.masked_fill(top_k == 0, self._vocab_size)
         top_p_safe = top_p.masked_fill(top_p == 0.0, 1.0)
 
+        # Rows that filter nothing must bypass the renorm kernels, mirroring the
+        # `no_top_k and no_top_p` branch of `sample_kernel`, which samples the full
+        # temperature-scaled distribution without renormalizing at all.
+        #
+        # Without this the two paths disagree. `top_p_renorm_probs(probs, 1.0)` is
+        # not the identity on a peaked row: the fp32 cumulative mass reaches 1.0
+        # after a handful of tokens, so everything beyond is set to exactly 0. A
+        # row with argmax p ~= 0.999999 was observed collapsing to 4 kept tokens of
+        # 131072. The sampler, having skipped the renorm, can still draw far into
+        # the tail (an observed draw had raw rank 8605, log-prob -38.06), and that
+        # token's renormalized probability is 0 -> log(0) = -inf. The -inf then
+        # leaves the server as JSON null (orjson serializes non-finite floats as
+        # null) and fails downstream validation.
+        no_k = top_k_safe >= self._vocab_size
+        no_p = top_p_safe >= 1.0
+        unfiltered = no_k & no_p
+        if bool(unfiltered.all()):
+            return torch.log(probs)
+
         # Renormalize to the kept set (top-k first, then top-p) to match
         renormed = flashinfer.sampling.top_k_renorm_probs(probs, top_k_safe)
         renormed = flashinfer.sampling.top_p_renorm_probs(renormed, top_p_safe)
+        if bool(unfiltered.any()):
+            # Mixed batch: restore the unfiltered rows to their un-renormalized
+            # distribution so only rows that genuinely filter are renormalized.
+            renormed = torch.where(unfiltered.unsqueeze(1), probs, renormed)
         return torch.log(renormed)
