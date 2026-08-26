@@ -406,6 +406,10 @@ class DynamicInferenceRequest(InferenceRequest):
     # life, so a request that spans a refit republishes under its original salt
     # and cannot be matched by requests admitted after the refit.
     hash_salt: int = 0
+    # Length of the leading run of this request's blocks that was obtained by hash
+    # match rather than computed. Accumulated across prefill chunks by the context,
+    # which uses it to avoid rewriting KV into blocks that already hold it.
+    num_matched_prefix_blocks: int = 0
 
     # Computed field - not passed by caller
     precomputed_block_hashes: List[int] = field(default_factory=list)
