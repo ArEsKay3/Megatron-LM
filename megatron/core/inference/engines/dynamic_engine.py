@@ -389,6 +389,12 @@ class DynamicInferenceEngine(AbstractEngine):
         # Generated token count already streamed for each request.
         self._partial_emit_lengths: Dict[int, int] = {}
         self._generation_epoch: Optional[int] = None
+        # Weight generation counter, bumped on every resume. Used only to salt
+        # block hashes so the prefix cache cannot serve KV computed by earlier
+        # weights. Deliberately separate from `_generation_epoch`, which is
+        # driven by the SET_GENERATION_EPOCH control message and stamps
+        # per-request reporting fields.
+        self._weight_epoch: int = 0
         # Track requests that should stop due to stop words (detected in post_process_requests)
         self.stop_word_finished_request_ids: set[int] = set()
         # Track requests currently being finished due to stop words (to skip extra token)
@@ -960,6 +966,15 @@ class DynamicInferenceEngine(AbstractEngine):
         if self.state not in (EngineState.SUSPENDED, EngineState.SUSPENDING):
             return
 
+        # A suspend/resume cycle is how a weight refit is staged, so treat resume
+        # as a new weight generation and re-salt the prefix cache. Bumped while
+        # still suspended, before anything can be admitted, so there is no window
+        # in which a post-refit request is admitted under the old salt. Requests
+        # re-added below keep the salt they were constructed with, so a request
+        # that spans the refit republishes under its original generation and is
+        # unmatchable by new arrivals.
+        self._weight_epoch += 1
+
         InferenceMode.set_active()
 
         # Resume.
@@ -1281,6 +1296,7 @@ class DynamicInferenceEngine(AbstractEngine):
             sampling_params=sampling_params,
             block_size_tokens=self.context.block_size_tokens,
             enable_prefix_caching=self.context.enable_prefix_caching,
+            hash_salt=self._weight_epoch,
         )
 
         # Add request.
