@@ -88,17 +88,26 @@ class Status(Enum):
 # =========================================================================
 
 
-def compute_block_hashes_batched(prompt_tokens: torch.Tensor, block_size: int) -> List[int]:
+def compute_block_hashes_batched(
+    prompt_tokens: torch.Tensor, block_size: int, salt: int = 0
+) -> List[int]:
     """Compute SHA-256 based hashes for all complete blocks in a prompt.
 
     Each block hash is computed as SHA-256(parent_digest || block_bytes), where
-    parent_digest chains from the previous block (starting from a zero digest).
+    parent_digest chains from the previous block (starting from a digest of `salt`).
     This provides cryptographic collision resistance with no exploitable algebraic
     structure.
+
+    `salt` partitions the hash space: two prompts with identical tokens but
+    different salts produce disjoint hash chains and therefore never match each
+    other in the prefix cache. The engine uses this to scope cached blocks to the
+    model weights that produced them, so a weight refit cannot serve KV computed
+    by the previous weights. `salt=0` reproduces the unsalted chain.
 
     Args:
         prompt_tokens: All prompt token IDs, shape [seq_len].
         block_size: Number of tokens per block.
+        salt: Value mixed into the chain seed. Defaults to 0 (unsalted).
 
     Returns:
         List of positive integer hash values in [1, 2^63-1], one per complete block.
@@ -113,7 +122,14 @@ def compute_block_hashes_batched(prompt_tokens: torch.Tensor, block_size: int) -
     block_byte_size = block_size * tokens_cpu.element_size()  # 8 bytes per int64
 
     hashes = []
-    parent_digest = b'\x00' * 32  # SHA-256 digest size
+    # Seed the chain. salt=0 keeps the original all-zero seed so unsalted callers
+    # (e.g. the DP coordinator's routing hashes) are bit-for-bit unchanged.
+    if salt == 0:
+        parent_digest = b'\x00' * 32  # SHA-256 digest size
+    else:
+        parent_digest = hashlib.sha256(
+            (salt & ((1 << 64) - 1)).to_bytes(8, byteorder='little')
+        ).digest()
 
     for i in range(num_complete_blocks):
         block_bytes = tokens_bytes[i * block_byte_size : (i + 1) * block_byte_size]
@@ -385,6 +401,11 @@ class DynamicInferenceRequest(InferenceRequest):
     block_size_tokens: Optional[int] = None  # Block size for hash computation
     enable_prefix_caching: bool = False  # Whether prefix caching is enabled
     num_cached_tokens: int = 0  # Tokens served from prefix cache (set by context on first match)
+    # Scopes this request's block hashes to a weight generation. Set once, at
+    # construction, from the engine's weight epoch; a request keeps its salt for
+    # life, so a request that spans a refit republishes under its original salt
+    # and cannot be matched by requests admitted after the refit.
+    hash_salt: int = 0
 
     # Computed field - not passed by caller
     precomputed_block_hashes: List[int] = field(default_factory=list)
@@ -411,7 +432,7 @@ class DynamicInferenceRequest(InferenceRequest):
         - precomputed_block_hashes is [hash1, ...] for N complete blocks
         """
         self.precomputed_block_hashes = compute_block_hashes_batched(
-            self.prompt_tokens, self.block_size_tokens
+            self.prompt_tokens, self.block_size_tokens, salt=self.hash_salt
         )
 
     @property
@@ -705,6 +726,11 @@ class DynamicInferenceRequestRecord:
             kv_cache_epoch=kv_cache_epoch,
             block_size_tokens=old_request.block_size_tokens,
             enable_prefix_caching=old_request.enable_prefix_caching,
+            # Keep the original salt: the checkpointed request is the same
+            # generation as before, and under RECOMPUTE (the only mode that
+            # checkpoints on suspend) the prefix cache is cleared at resume
+            # anyway, so there is nothing stale for it to match.
+            hash_salt=old_request.hash_salt,
         )
         # Preserve event_add_engine from old request if it exists, otherwise set it.
         # This ensures TTFT calculation works correctly for evicted/resumed requests.
@@ -770,6 +796,7 @@ class DynamicInferenceRequestRecord:
             enable_prefix_caching=self.requests[0].enable_prefix_caching,
             precomputed_block_hashes=self.requests[0].precomputed_block_hashes,
             num_cached_tokens=self.requests[0].num_cached_tokens,
+            hash_salt=self.requests[0].hash_salt,
         )
 
         return request
