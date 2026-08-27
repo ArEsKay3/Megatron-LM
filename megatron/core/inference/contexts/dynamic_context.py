@@ -3078,6 +3078,36 @@ class DynamicInferenceContext(BaseInferenceContext):
             max_skip = prefill_chunk_length - 2
             prefix_skip_tokens = (max_skip // self.block_size_tokens) * self.block_size_tokens
 
+            # Rounding down can land on a block that has no cached Mamba state.
+            # add_request() restores from `prefix_skip_tokens // block_size - 1`
+            # unconditionally and, when `restore_to_live` misses, ZEROES the SSM
+            # state while still skipping the tokens -- the request then resumes
+            # mid-prompt from a zero state and produces a wrong (but internally
+            # coherent) distribution for its first generated token.
+            #
+            # Mamba boundaries are sparse: only the few positions selected in
+            # `compute_and_store_offsets` are cached, so the clamped boundary is
+            # frequently not one of them. A 5889-token prompt caches state only at
+            # block 22 (offset 5888), the clamp moves the skip to 5632, and the
+            # restore then targets block 21, which has none.
+            #
+            # Walk back to the nearest block that actually has cached state, the
+            # same way the `raw_skip >= prefill_chunk_length` branch above does.
+            if (
+                self.is_hybrid_model
+                and self.mamba_slot_allocator is not None
+                and finished == 0
+                and prefix_skip_tokens > 0
+            ):
+                mamba_map = self.mamba_slot_allocator.hash_to_block_id
+                hashes = req.precomputed_block_hashes or []
+                usable = 0
+                for j in range(prefix_skip_tokens // self.block_size_tokens - 1, -1, -1):
+                    if j < len(hashes) and hashes[j] in mamba_map:
+                        usable = j + 1
+                        break
+                prefix_skip_tokens = usable * self.block_size_tokens
+
         effective_prefill_chunk_length = prefill_chunk_length - prefix_skip_tokens
         num_blocks_from_pool = max(
             0, overall_required_blocks - already_allocated_blocks - num_matched
