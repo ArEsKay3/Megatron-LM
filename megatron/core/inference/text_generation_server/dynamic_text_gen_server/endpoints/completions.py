@@ -8,6 +8,7 @@ import uuid
 from megatron.core.inference.inference_request import unwrap_serialized_tensors
 from megatron.core.inference.sampling_params import SamplingParams
 
+from .common import generation_config_sampling_defaults
 from ..incremental_detokenizer import HuggingFaceFastIncrementalDetokenizer
 from ..openai_streaming import openai_stream
 
@@ -68,9 +69,12 @@ try:
 
         # --- 2. Parse Sampling Params ---
         try:
-            temperature = float(req.get("temperature", 1.0))
-            top_p = float(req.get("top_p", 1.0))
-            top_k = int(req.get("top_k", 0))
+            # Model-declared defaults (generation_config.json) fill in whatever the
+            # request omits; explicit request values still win.
+            gen_defaults = generation_config_sampling_defaults(tokenizer)
+            temperature = float(req.get("temperature", gen_defaults.get("temperature", 1.0)))
+            top_p = float(req.get("top_p", gen_defaults.get("top_p", 1.0)))
+            top_k = int(req.get("top_k", gen_defaults.get("top_k", 0)))
             echo = bool(req.get("echo", False))
 
             if temperature == 0.0:
