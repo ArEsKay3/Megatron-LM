@@ -17,6 +17,10 @@ from megatron.core.inference.inference_request import (
 )
 from megatron.core.inference.config import routes_on_prefix
 from megatron.core.inference.sampling_params import SamplingParams
+from megatron.core.inference.text_generation_server.dynamic_text_gen_server.endpoints.common import (
+    generation_config_sampling_defaults,
+    log_sampling_defaults_once,
+)
 from megatron.core.inference.text_generation_controllers.text_generation_controller import (
     TextGenerationController,
 )
@@ -589,10 +593,18 @@ try:
 
         # --- 2. Parse Sampling Params ---
         try:
-            temperature = float(_get_non_none(req, "temperature", 1.0))
-            top_p = float(_get_non_none(req, "top_p", 1.0))
-            top_k = int(_get_non_none(req, "top_k", 0))
+            # Model-declared defaults (generation_config.json) fill in whatever the
+            # request omits; explicit request values still win.
+            gen_defaults = generation_config_sampling_defaults(tokenizer)
+            temperature = float(_get_non_none(req, "temperature", gen_defaults.get("temperature", 1.0)))
+            top_p = float(_get_non_none(req, "top_p", gen_defaults.get("top_p", 1.0)))
+            top_k = int(_get_non_none(req, "top_k", gen_defaults.get("top_k", 0)))
             n = int(_get_non_none(req, "n", 1))  # Number of choices to generate
+
+            log_sampling_defaults_once(
+                tokenizer,
+                {"temperature": temperature, "top_p": top_p, "top_k": top_k},
+            )
 
             if temperature == 0.0:
                 top_k = 1
