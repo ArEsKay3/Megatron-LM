@@ -5,6 +5,7 @@ import concurrent
 import copy
 import functools
 import logging
+import os
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, OrderedDict, Tuple, Union
@@ -1326,6 +1327,63 @@ class TextGenerationController:
             no_top_p=no_top_p,
             output=self._sampled_tokens_cuda[:n],
         )
+        self._maybe_dump_improbable_samples(
+            self._all_logits_cuda.squeeze(0), self._sampled_tokens_cuda[:n], n, gather_indices
+        )
+
+    def _maybe_dump_improbable_samples(self, logits, tokens, n, gather_indices):
+        """Save the full logits row whenever a very improbable token is sampled.
+
+        Enabled by MCORE_LOGIT_DUMP_DIR; a no-op otherwise. MCORE_LOGIT_DUMP_LOGPROB
+        sets the threshold (default -25).
+
+        Exists to separate two explanations for a token whose reported logprob is
+        far below what the number of draws can account for: either the reported
+        logprob is wrong, or the sampler selected a token the distribution did not
+        support. With the full row saved, log_softmax can be recomputed offline and
+        compared against the reported value, which distinguishes them.
+
+        Cost is one logsumexp over the active rows per decode step. Recomputing the
+        selected logprob here rather than reusing the engine's own value is
+        deliberate: the engine's value is the thing under suspicion.
+
+        Never raises -- diagnostics must not kill a multi-hour run.
+        """
+        dump_dir = os.environ.get("MCORE_LOGIT_DUMP_DIR")
+        if not dump_dir or n == 0:
+            return
+        try:
+            rows = logits[:n] if gather_indices is None else logits[gather_indices[:n]]
+            rows_f = rows.float()
+            tok = tokens.to(torch.long).view(-1, 1)
+            # logsumexp + gather, not a full log_softmax: the [n, vocab] output
+            # would be materialised every decode step for nothing.
+            sel = rows_f.gather(1, tok).squeeze(1) - torch.logsumexp(rows_f, dim=-1)
+            thresh = float(os.environ.get("MCORE_LOGIT_DUMP_LOGPROB", "-25"))
+            hits = (sel < thresh).nonzero(as_tuple=True)[0]
+            if hits.numel() == 0:
+                return
+            os.makedirs(dump_dir, exist_ok=True)
+            rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
+            self._logit_dump_seq = getattr(self, "_logit_dump_seq", 0)
+            for i in hits.tolist():
+                self._logit_dump_seq += 1
+                torch.save(
+                    {
+                        "logits": rows[i].detach().to(torch.float32).cpu(),
+                        "sampled_token_id": int(tok[i].item()),
+                        "recomputed_logprob": float(sel[i].item()),
+                        "rank": rank,
+                        "sampling_backend": getattr(self, "_sampling_backend", "unknown"),
+                    },
+                    os.path.join(
+                        dump_dir, f"logit_r{rank:05d}_{self._logit_dump_seq:08d}.pt"
+                    ),
+                )
+        except Exception as e:  # noqa: BLE001 - diagnostics must never fail the run
+            if not getattr(self, "_logit_dump_warned", False):
+                self._logit_dump_warned = True
+                print(f"[logit-dump] disabled after error: {type(e).__name__}: {e}", flush=True)
 
     def _active_requests_sampling_filter_flags(
         self, active_request_count: Optional[int] = None
