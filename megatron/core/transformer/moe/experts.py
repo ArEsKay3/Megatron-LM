@@ -76,7 +76,7 @@ else:
 
 try:
     import flashinfer.fused_moe as fused_moe
-    from flashinfer.fused_moe.core import ActivationType
+    from flashinfer.fused_moe.core import ActivationType, WeightLayout
 
     HAVE_FLASHINFER = True
 except ImportError:
@@ -84,6 +84,7 @@ except ImportError:
 
 from megatron.core.inference.moe import ActivationType as McoreActivationType
 from megatron.core.inference.moe import InferenceGroupedGemmBackend, mcore_fused_moe, vllm_fused_moe
+from megatron.core.inference.moe.trtllm_finalize import padding_aware_finalize
 
 logger = logging.getLogger(__name__)
 
@@ -1026,6 +1027,23 @@ class InferenceGroupedMLP(TEGroupedMLP):
 
         self._mcore_activation_type = self._resolve_mcore_activation_type()
         self.inference_grouped_gemm_backend = config.inference_grouped_gemm_backend
+        if self.inference_grouped_gemm_backend == InferenceGroupedGemmBackend.TRTLLM_BF16_ROUTED:
+            self._trtllm_permute_indices = {}
+            self._trtllm_intermediate_size = None
+            self._canonical_weights_released = False
+            self.register_buffer('_trtllm_fc1_weight', None, persistent=False)
+            self.register_buffer('_trtllm_fc2_weight', None, persistent=False)
+            if HAVE_FLASHINFER:
+                _sig = inspect.signature(fused_moe.trtllm_bf16_routed_moe)
+                _supports_act = 'activation_type' in _sig.parameters
+                if not _supports_act and self._flashinfer_activation_type != ActivationType.Swiglu:
+                    raise RuntimeError(
+                        "The installed FlashInfer trtllm_bf16_routed_moe only supports SwiGLU. "
+                        "Upgrade FlashInfer to use another activation."
+                    )
+                self._trtllm_activation_kwargs = (
+                    {'activation_type': self._flashinfer_activation_type} if _supports_act else {}
+                )
         self._nvls_dispatcher = config.inference_moe_token_dispatcher_type == 'nvls'
 
     def _resolve_flashinfer_activation_type(self):
@@ -1244,6 +1262,21 @@ class InferenceGroupedMLP(TEGroupedMLP):
                 self._build_concatenated_weights()
             self._concatenated_weights_built = True
 
+            # The TRT-LLM shuffled weights are derived from the concatenated
+            # ones, so they have to be built here too. Upstream relies on
+            # _post_refit for this, but this deployment loads inference weights
+            # directly instead of going through the refit hook, so _post_refit
+            # never fires and the derived weights would stay None.
+            if (
+                self.inference_grouped_gemm_backend
+                == InferenceGroupedGemmBackend.TRTLLM_BF16_ROUTED
+            ):
+                self._refresh_trtllm_weights()
+                # Free the canonical weights immediately, per layer, rather than
+                # after every layer is converted: the peak then stays one layer's
+                # duplicate above the model instead of a full second copy of it.
+                self._release_canonical_expert_weights()
+
         if self.inference_grouped_gemm_backend == InferenceGroupedGemmBackend.FLASHINFER:
             assert routing_map is not None, "routing_map is required for FlashInfer forward pass."
             assert not self.training, "FlashInfer forward path is only used in inference mode."
@@ -1254,10 +1287,214 @@ class InferenceGroupedMLP(TEGroupedMLP):
             return self._mcore_fused_moe_forward(
                 permuted_local_hidden_states, permuted_probs, routing_map=routing_map
             )
+        elif self.inference_grouped_gemm_backend == InferenceGroupedGemmBackend.TRTLLM_BF16_ROUTED:
+            return self._trtllm_bf16_routed_forward(
+                permuted_local_hidden_states, permuted_probs, routing_map=routing_map
+            )
         elif self.inference_grouped_gemm_backend == InferenceGroupedGemmBackend.VLLM:
             return self._vllm_forward(
                 permuted_local_hidden_states, permuted_probs, routing_map=routing_map
             )
+
+    @staticmethod
+    def _pad_trtllm_expert_weights(fc1, fc2, gated):
+        """Zero-pad one expert's intermediate dimension to a multiple of 128."""
+        intermediate_size = fc2.shape[1]
+        padded_intermediate_size = ((intermediate_size + 127) // 128) * 128
+        padding = padded_intermediate_size - intermediate_size
+
+        if padding == 0:
+            return fc1, fc2, padded_intermediate_size
+
+        if gated:
+            hidden_size = fc1.shape[1]
+            fc1 = fc1.reshape(2, intermediate_size, hidden_size)
+            fc1 = F.pad(fc1, (0, 0, 0, padding))
+            fc1 = fc1.reshape(2 * padded_intermediate_size, hidden_size)
+        else:
+            fc1 = F.pad(fc1, (0, 0, 0, padding))
+        fc2 = F.pad(fc2, (0, padding))
+
+        return fc1, fc2, padded_intermediate_size
+
+    def _build_trtllm_shuffled_weights(self, out_fc1=None, out_fc2=None):
+        """Build the TRT-LLM BlockMajorK weights from the canonical expert weights.
+
+        Each expert is written straight into its slot of a preallocated output
+        tensor rather than collected in a list and stacked at the end. Stacking
+        would hold a second full copy of the layer's experts alive at the moment
+        of the stack, on top of the canonical weights it is reading from -- three
+        copies of a 3.7 GiB layer, which does not fit on an EP=1 rank where every
+        rank holds all experts.
+
+        Passing `out_fc1`/`out_fc2` refreshes in place, preserving the buffer
+        addresses that captured CUDA graphs point at.
+        """
+        from flashinfer.fused_moe.core import (
+            _maybe_get_cached_w3_w1_permute_indices,
+            convert_to_block_layout,
+            get_w2_permute_indices_with_cache,
+        )
+
+        epilogue_tile_m = 128
+        block_k = 128
+
+        for expert_idx in range(self.num_local_experts):
+            fc1, fc2, self._trtllm_intermediate_size = self._pad_trtllm_expert_weights(
+                self._fc1_weight[expert_idx],
+                self._fc2_weight[expert_idx],
+                self.config.gated_linear_unit,
+            )
+            fc1 = fc1.contiguous().view(torch.uint8)
+            fc2 = fc2.contiguous().view(torch.uint8)
+
+            fc1_indices = _maybe_get_cached_w3_w1_permute_indices(
+                self._trtllm_permute_indices,
+                fc1,
+                epilogue_tile_m,
+                is_gated_act_gemm=self.config.gated_linear_unit,
+            )
+            fc2_indices = get_w2_permute_indices_with_cache(
+                self._trtllm_permute_indices, fc2, epilogue_tile_m
+            )
+
+            shuffled_fc1 = convert_to_block_layout(fc1[fc1_indices].contiguous(), block_k).view(
+                torch.bfloat16
+            )
+            shuffled_fc2 = convert_to_block_layout(fc2[fc2_indices].contiguous(), block_k).view(
+                torch.bfloat16
+            )
+
+            if out_fc1 is None:
+                out_fc1 = torch.empty(
+                    (self.num_local_experts, *shuffled_fc1.shape),
+                    dtype=shuffled_fc1.dtype,
+                    device=shuffled_fc1.device,
+                )
+                out_fc2 = torch.empty(
+                    (self.num_local_experts, *shuffled_fc2.shape),
+                    dtype=shuffled_fc2.dtype,
+                    device=shuffled_fc2.device,
+                )
+
+            out_fc1[expert_idx].copy_(shuffled_fc1)
+            out_fc2[expert_idx].copy_(shuffled_fc2)
+
+            # Drop this expert's intermediates before converting the next one so
+            # the transient stays one expert wide rather than one layer wide.
+            del fc1, fc2, shuffled_fc1, shuffled_fc2
+
+        return out_fc1, out_fc2
+
+    @torch.no_grad()
+    def _refresh_trtllm_weights(self):
+        """Regenerate TRT-LLM weights while preserving CUDA-graph buffer addresses."""
+        if self._canonical_weights_released:
+            raise RuntimeError(
+                "Cannot refresh the TRT-LLM shuffled weights: the canonical expert "
+                "weights were released to make room for them. Refit is unsupported "
+                "with inference_grouped_gemm_backend='trtllm_bf16_routed'."
+            )
+
+        if self._trtllm_fc1_weight is None:
+            self._trtllm_fc1_weight, self._trtllm_fc2_weight = self._build_trtllm_shuffled_weights()
+            return
+
+        # Refresh in place so captured CUDA graphs keep pointing at valid memory.
+        self._build_trtllm_shuffled_weights(self._trtllm_fc1_weight, self._trtllm_fc2_weight)
+
+    @torch.no_grad()
+    def _release_canonical_expert_weights(self):
+        """Free the canonical expert weights once the shuffled copies exist.
+
+        The TRT-LLM path reads only the shuffled BlockMajorK weights, so keeping
+        the canonical ones alive costs a second full set of expert weights per
+        layer -- 85 GiB across this model's 23 MoE layers at EP=1, where every
+        rank holds all 128 experts.
+
+        Both references have to go. `_build_concatenated_weights` pointed each
+        per-expert `param.data` at a view into the concatenated buffers, so
+        dropping the buffers alone would leave the storage alive through the
+        parameters.
+        """
+        device = self._fc1_weight.device
+        dtype = self._fc1_weight.dtype
+        empty = torch.empty(0, device=device, dtype=dtype)
+
+        for i in range(self.num_local_experts):
+            getattr(self.linear_fc1, f'weight{i}').data = empty
+            getattr(self.linear_fc2, f'weight{i}').data = empty
+
+        self._fc1_weight = None
+        self._fc2_weight = None
+        self._canonical_weights_released = True
+
+    def _post_refit(self):
+        """Refresh derived TRT-LLM weights after the canonical weights are refit."""
+        if (
+            self.inference_grouped_gemm_backend == InferenceGroupedGemmBackend.TRTLLM_BF16_ROUTED
+            and self._concatenated_weights_built
+        ):
+            self._refresh_trtllm_weights()
+
+    def _trtllm_bf16_routed_forward(self, hidden_states, probs, routing_map):
+        """FlashInfer TensorRT-LLM BF16 routed MoE forward."""
+        assert (
+            hidden_states.dtype == torch.bfloat16
+        ), f"trtllm_bf16_routed requires bf16 input, got {hidden_states.dtype}"
+        assert probs.dtype == torch.float32, "trtllm_bf16_routed requires fp32 probabilities."
+        assert routing_map is not None, "routing_map is required for trtllm_bf16_routed."
+
+        packed_topk_ids = (routing_map.to(torch.int32) << 16) | (
+            probs.to(torch.bfloat16).contiguous().view(torch.int16).to(torch.int32)
+        )
+        # At ep_size == 1 the NVLS dispatcher early-outs in combine() and never
+        # allocates its symmetric buffers, so the RSV tensor is None even though
+        # the dispatcher type is 'nvls'. In that case let the kernel finalize
+        # itself, matching what the other inference backends do when they pass a
+        # None `output=` through to FlashInfer.
+        rsv = NVLSAllGatherVDispatcher._get_rsv_tensor() if self._nvls_dispatcher else None
+        use_nvls_output = rsv is not None
+        local_expert_start = self.ep_group.rank() * self.num_local_experts
+        output = fused_moe.trtllm_bf16_routed_moe(
+            topk_ids=packed_topk_ids,
+            hidden_states=hidden_states,
+            gemm1_weights=self._trtllm_fc1_weight,
+            gemm2_weights=self._trtllm_fc2_weight,
+            num_experts=not_none(self.config.num_moe_experts),
+            top_k=routing_map.shape[1],
+            n_group=None,
+            topk_group=None,
+            intermediate_size=not_none(self._trtllm_intermediate_size),
+            local_expert_offset=local_expert_start,
+            local_num_experts=self.num_local_experts,
+            routed_scaling_factor=None,
+            routing_method_type=0,
+            use_shuffled_weight=True,
+            weight_layout=WeightLayout.BlockMajorK,
+            do_finalize=not use_nvls_output,
+            tune_max_num_tokens=hidden_states.shape[0],
+            **self._trtllm_activation_kwargs,
+        )
+        if use_nvls_output:
+            if not isinstance(output, (list, tuple)) or len(output) < 3:
+                raise RuntimeError(
+                    "FlashInfer trtllm_bf16_routed_moe(do_finalize=False) must return "
+                    "[gemm2_output, expert_weights, expanded_idx_to_permuted_idx]."
+                )
+            output = padding_aware_finalize(
+                gemm2_output=output[0],
+                expert_weights=output[1],
+                inverse_map=output[2],
+                output=rsv,
+                valid_tokens=InferenceAllGatherDispatcherBase._valid_tokens(),
+                top_k=routing_map.shape[1],
+            )
+        elif isinstance(output, (list, tuple)):
+            # do_finalize=True returns a single-element list, as with
+            # cutlass_fused_moe in _flashinfer_forward above.
+            output = output[0]
+        return output, None
 
 
 class SequentialMLP(MegatronModule):
