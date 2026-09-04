@@ -8,7 +8,7 @@ import uuid
 from megatron.core.inference.inference_request import unwrap_serialized_tensors
 from megatron.core.inference.sampling_params import SamplingParams
 
-from .common import generation_config_sampling_defaults
+from .common import generation_config_sampling_defaults, log_sampling_defaults_once
 from ..incremental_detokenizer import HuggingFaceFastIncrementalDetokenizer
 from ..openai_streaming import openai_stream
 
@@ -76,6 +76,11 @@ try:
             top_p = float(req.get("top_p", gen_defaults.get("top_p", 1.0)))
             top_k = int(req.get("top_k", gen_defaults.get("top_k", 0)))
             echo = bool(req.get("echo", False))
+
+            log_sampling_defaults_once(
+                tokenizer,
+                {"temperature": temperature, "top_p": top_p, "top_k": top_k},
+            )
 
             if temperature == 0.0:
                 top_k = 1

@@ -41,3 +41,34 @@ def generation_config_sampling_defaults(tokenizer):
     if gen_cfg.get("do_sample") is False:
         defaults["top_k"] = 1
     return defaults
+
+
+_LOGGED_SAMPLING_DEFAULTS = False
+
+
+def log_sampling_defaults_once(tokenizer, resolved):
+    """Log the resolved sampling defaults once per process.
+
+    Mirrors the startup log for the EOS token set: it makes it possible to confirm
+    from the server log that `generation_config.json` was found and applied, rather
+    than inferring it from sampled output (which is hopeless on peaked
+    distributions, where top_p barely truncates).
+    """
+    global _LOGGED_SAMPLING_DEFAULTS
+    if _LOGGED_SAMPLING_DEFAULTS:
+        return
+    _LOGGED_SAMPLING_DEFAULTS = True
+    import logging
+
+    gen_cfg = getattr(tokenizer, "generation_config", None)
+    logging.info(
+        "Sampling defaults: generation_config=%s -> defaults=%s; first request "
+        "resolved to temperature=%s top_p=%s top_k=%s",
+        {k: gen_cfg.get(k) for k in ("temperature", "top_p", "top_k", "do_sample")}
+        if isinstance(gen_cfg, dict)
+        else None,
+        generation_config_sampling_defaults(tokenizer),
+        resolved.get("temperature"),
+        resolved.get("top_p"),
+        resolved.get("top_k"),
+    )
