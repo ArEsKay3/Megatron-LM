@@ -14,6 +14,9 @@ from megatron.core.inference.sampling_params import (
 )
 
 
+_minf_sampler_announced = False
+
+
 class TorchSampling(Sampling):
     """Sampling via a bucketed Gumbel-max (exponential-race) draw.
 
@@ -23,6 +26,17 @@ class TorchSampling(Sampling):
     def __init__(self, rng: torch.Generator, vocab_size: int) -> None:
         self._rng = rng
         self._vocab_size = vocab_size
+        # Announce which sampler this process is running, once per process. Which
+        # Megatron-LM tree got bind-mounted is otherwise invisible at runtime, and
+        # mixing the two across an A/B is silent -- the arms just differ slightly.
+        global _minf_sampler_announced
+        if not _minf_sampler_announced:
+            _minf_sampler_announced = True
+            print(
+                "[minf-sampler] TorchSampling: gumbel-max exponential race, fp32 (PR#16 PRESENT)"
+                f" | vocab_size={vocab_size} | src={__file__}",
+                flush=True,
+            )
 
     @staticmethod
     def _modify_logits_for_top_k_filtering(logits: Tensor, top_k: int) -> None:
