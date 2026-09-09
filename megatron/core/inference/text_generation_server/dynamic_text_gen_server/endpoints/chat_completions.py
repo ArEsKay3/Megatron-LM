@@ -11,11 +11,11 @@ from functools import partial
 
 import torch
 
+from megatron.core.inference.config import routes_on_prefix
 from megatron.core.inference.inference_request import (
     compute_block_hashes_batched,
     unwrap_serialized_tensors,
 )
-from megatron.core.inference.config import routes_on_prefix
 from megatron.core.inference.sampling_params import SamplingParams
 from megatron.core.inference.text_generation_controllers.text_generation_controller import (
     TextGenerationController,
@@ -694,9 +694,7 @@ try:
             response.timeout = None
             return response
 
-        tasks = [
-            client.add_request(prompt_tokens, sampling_params, block_hashes) for _ in range(n)
-        ]
+        tasks = [client.add_request(prompt_tokens, sampling_params, block_hashes) for _ in range(n)]
 
         if current_app.config['verbose']:
             start_time = time.perf_counter()

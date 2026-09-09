@@ -29,7 +29,6 @@ logger = logging.getLogger(__name__)
 _SERVER_PROCESSES: List[mp.Process] = []
 
 
-
 @contextmanager
 def temp_log_level(level, logger=None):
     """Enables temporarily overriding the logging level."""

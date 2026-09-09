@@ -56,7 +56,7 @@ class MambaInferenceStateConfig:
         decoder = get_attr_wrapped_model(model, "decoder")
         layer_type_list = getattr(decoder, "layer_type_list", None)
         if layer_type_list is not None and Symbols.MAMBA in layer_type_list:
-            (mamba_conv_states_shape, mamba_ssm_states_shape) = (
+            mamba_conv_states_shape, mamba_ssm_states_shape = (
                 decoder.mamba_state_shapes_per_request()
             )
             if conv_states_dtype is None:
@@ -287,9 +287,7 @@ class InferenceConfig:
     The number of mixed prefill graphs to capture if mixed prefill/decode graphs are enabled.
     """
 
-    cuda_graph_sizing_distribution: CudaGraphSizingDistribution = (
-        CudaGraphSizingDistribution.HYBRID
-    )
+    cuda_graph_sizing_distribution: CudaGraphSizingDistribution = CudaGraphSizingDistribution.HYBRID
     """
     How CUDA graph token counts are spaced. HYBRID (default) applies EXPONENTIAL to prefill and
     mixed graphs and LINEAR to decode-only graphs, since the two cover ranges that differ by

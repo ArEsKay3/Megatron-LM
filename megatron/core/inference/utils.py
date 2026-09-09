@@ -26,6 +26,7 @@ class InferenceMode:
     """
 
     _is_active: bool = False
+    _flashinfer_token_capacity: int | None = None
 
     @classmethod
     def is_active(cls) -> bool:
@@ -36,11 +37,23 @@ class InferenceMode:
     def set_active(cls) -> None:
         """Mark the inference engine as active. Idempotent."""
         cls._is_active = True
+        cls._flashinfer_token_capacity = None
+
+    @classmethod
+    def set_flashinfer_token_capacity(cls, token_capacity: int | None) -> None:
+        """Set the inferred FlashInfer row capacity for the current inference step."""
+        cls._flashinfer_token_capacity = token_capacity
+
+    @classmethod
+    def flashinfer_token_capacity(cls) -> int | None:
+        """Return the inferred row capacity, or None when the full buffer is required."""
+        return cls._flashinfer_token_capacity
 
     @classmethod
     def unset_active(cls) -> None:
         """Mark the inference engine as inactive. Idempotent."""
         cls._is_active = False
+        cls._flashinfer_token_capacity = None
 
     @classmethod
     @contextlib.contextmanager

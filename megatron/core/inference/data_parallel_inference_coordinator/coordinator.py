@@ -104,9 +104,7 @@ class DataParallelInferenceCoordinator:
             PrefixCachingCoordinatorPolicy.FIRST_PREFIX_BLOCK
         ),
         prefix_caching_routing_alpha: float = 0.5,
-        prefix_caching_cost_policy: PrefixCachingCostPolicy = (
-            PrefixCachingCostPolicy.LOAD_AWARE
-        ),
+        prefix_caching_cost_policy: PrefixCachingCostPolicy = (PrefixCachingCostPolicy.LOAD_AWARE),
         prefix_caching_load_beta: float = 1.0,
         prefix_caching_eviction_policy: PrefixCachingEvictionPolicy = (
             PrefixCachingEvictionPolicy.LRU
@@ -655,9 +653,7 @@ class DataParallelInferenceCoordinator:
             PrefixCachingCoordinatorPolicy.FIRST_PREFIX_BLOCK
         ),
         prefix_caching_routing_alpha: float = 0.5,
-        prefix_caching_cost_policy: PrefixCachingCostPolicy = (
-            PrefixCachingCostPolicy.LOAD_AWARE
-        ),
+        prefix_caching_cost_policy: PrefixCachingCostPolicy = (PrefixCachingCostPolicy.LOAD_AWARE),
         prefix_caching_load_beta: float = 1.0,
         prefix_caching_eviction_policy: PrefixCachingEvictionPolicy = (
             PrefixCachingEvictionPolicy.LRU

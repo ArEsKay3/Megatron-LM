@@ -1,10 +1,15 @@
 # Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
-from typing import Dict, Optional, Tuple
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Dict, Optional, Tuple
 
 import torch
 
-from megatron.core.inference.quantization.mxfp8_tensor import MXFP8Tensor
+from megatron.core.inference.quantization.mxfp8_tensor import MXFP8Backend, MXFP8Tensor
+
+if TYPE_CHECKING:
+    from megatron.core.inference.moe import InferenceGroupedGemmBackend
 
 try:
     from transformer_engine.pytorch.tensor.mxfp8_tensor import MXFP8Tensor as TEMXFP8Tensor
@@ -50,7 +55,36 @@ def _verify_te_to_mcore_mxfp8_conversion(te_dequantized, fi_quantized: MXFP8Tens
         raise ValueError(f"MXFP8 sanity check failed. Diff norm: {diff_norm}")
 
 
-def quantize_model_to_mxfp8(model: torch.nn.Module, backend: str = "flashinfer") -> None:
+def resolve_mxfp8_backend(
+    inference_grouped_gemm_backend: str | InferenceGroupedGemmBackend,
+) -> MXFP8Backend:
+    """Resolve the canonical MXFP8 storage required by a grouped-MoE backend.
+
+    Args:
+        inference_grouped_gemm_backend: The configured backend, either as its raw
+            string value or as the enum produced by ``TransformerConfig``.
+
+    Returns:
+        The MXFP8 quantization and storage backend to use. FlashInfer routed MoE
+        derives its TRT-LLM Major-K weights from the canonical Triton/cuBLAS layout.
+
+    Raises:
+        ValueError: If the grouped-GEMM backend does not support MXFP8.
+    """
+    grouped_gemm_backend = getattr(
+        inference_grouped_gemm_backend, "value", inference_grouped_gemm_backend
+    )
+    # Both grouped-MoE backends consume MCore's canonical Triton/cuBLAS layout.
+    # FlashInfer repacks expert weights into TRT-LLM Major-K layout separately.
+    if grouped_gemm_backend in ("torch", "flashinfer"):
+        return "triton"
+    raise ValueError(
+        "MXFP8 inference does not support "
+        f"inference_grouped_gemm_backend={grouped_gemm_backend!r}."
+    )
+
+
+def quantize_model_to_mxfp8(model: torch.nn.Module, backend: MXFP8Backend = "flashinfer") -> None:
     """Convert TE MXFP8 weights to mcore MXFP8Tensor format.
 
     Recursively walks the model and replaces each TEMXFP8Tensor parameter

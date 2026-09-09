@@ -9,6 +9,7 @@ from typing import Callable, List, Literal, Optional, Tuple, Union
 import torch
 import torch.nn.functional as F
 
+from megatron.core.activations import squared_relu
 from megatron.core.enums import Fp4Recipe, Fp8Recipe
 from megatron.core.inference.moe import InferenceGroupedGemmBackend
 from megatron.core.quantization.quant_config import RecipeConfig
@@ -1169,6 +1170,20 @@ class TransformerConfig(ModelParallelConfig):
     capture-time allocations via free-list reuse); persistent buffers additionally give
     deterministic, fixed buffer addresses independent of allocator policy. Disable to
     fall back to per-call allocations."""
+    inference_flashinfer_token_capacity: int | None = None
+    """Optional fixed token-row capacity for FlashInfer MoE."""
+    inference_flashinfer_bounded_rows: bool = False
+    """Use an inferred decode-only token-row bound for FlashInfer MoE.
+
+    The bound is derived from the dynamic-inference request limit, speculative
+    decoding depth, and expert-parallel size. Dedicated disaggregated decode
+    engines use it without a per-step mode collective; dedicated prefill engines
+    retain the full dispatcher buffer. Under regular continuous batching it is
+    used only when every rank in the EP group is decode-only, with prefill and
+    mixed steps falling back to the full buffer after an EP-wide mode
+    agreement. Requires BF16 or MXFP8 parameters, the NVLS inference
+    dispatcher, and EP > 1.
+    """
 
     inference_moe_token_dispatcher_type: Literal['nccl', 'nvls'] = 'nvls'
     """Token dispatcher to use for MoE expert parallelism during inference.
@@ -1477,6 +1492,8 @@ class TransformerConfig(ModelParallelConfig):
         if self.expert_model_parallel_size > 1 and self.num_moe_experts is None:
             raise ValueError("num_moe_experts must be non None to use expert-parallel.")
 
+        mxfp8_enabled = bool(self.fp8) and self.fp8_recipe == Fp8Recipe.mxfp8
+
         if self.transformer_impl == "inference_optimized" and self.num_moe_experts is not None:
             if self.expert_tensor_parallel_size > 1:
                 raise ValueError(
@@ -1507,7 +1524,7 @@ class TransformerConfig(ModelParallelConfig):
                     f"got '{self.inference_grouped_gemm_backend}'."
                 )
 
-            if self.fp8 == "mxfp8":
+            if mxfp8_enabled:
                 if not self.fp8_param:
                     raise ValueError(
                         "fp8_param must be enabled when using "
@@ -1526,22 +1543,42 @@ class TransformerConfig(ModelParallelConfig):
                 )
 
             if (
-                self.inference_grouped_gemm_backend == InferenceGroupedGemmBackend.FLASHINFER
-                and self.fp8 == "mxfp8"
-            ):
-                raise ValueError(
-                    "FlashInfer is not compatible with MXFP8 quantization. "
-                    "Set inference_grouped_gemm_backend to 'torch'."
-                )
-
-            if (
                 self.inference_grouped_gemm_backend == InferenceGroupedGemmBackend.VLLM
-                and self.fp8 == "mxfp8"
+                and mxfp8_enabled
             ):
                 raise ValueError(
                     "vLLM Triton fused MoE only supports BF16. "
                     "Set inference_grouped_gemm_backend to 'torch' for MXFP8."
                 )
+
+            if (
+                self.inference_grouped_gemm_backend == InferenceGroupedGemmBackend.FLASHINFER
+                and mxfp8_enabled
+                and (self.gated_linear_unit or self.activation_func != squared_relu)
+            ):
+                raise ValueError(
+                    "FlashInfer routed MXFP8 MoE currently supports only non-gated "
+                    "squared-ReLU experts. Set activation_func=squared_relu and "
+                    "gated_linear_unit=False, or select inference_grouped_gemm_backend='torch'."
+                )
+
+            if self.inference_flashinfer_bounded_rows:
+                if (
+                    self.inference_grouped_gemm_backend != InferenceGroupedGemmBackend.FLASHINFER
+                    or not (
+                        mxfp8_enabled
+                        or (not bool(self.fp8) and self.params_dtype == torch.bfloat16)
+                    )
+                    or self.inference_moe_token_dispatcher_type != "nvls"
+                    or self.expert_model_parallel_size <= 1
+                ):
+                    raise ValueError(
+                        "inference_flashinfer_bounded_rows requires "
+                        "inference_grouped_gemm_backend='flashinfer', BF16 parameters "
+                        "with FP8 disabled or FP8 enabled with fp8_recipe='mxfp8', "
+                        "inference_moe_token_dispatcher_type='nvls' and "
+                        "expert_model_parallel_size > 1"
+                    )
 
             if self.batch_invariant_mode:
                 if self.inference_grouped_gemm_backend != InferenceGroupedGemmBackend.TORCH:

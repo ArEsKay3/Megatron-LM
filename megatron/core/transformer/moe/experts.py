@@ -23,7 +23,8 @@ from megatron.core.extensions.transformer_engine import HAVE_TE
 from megatron.core.fusions.fused_bias_geglu import quick_gelu, weighted_bias_quick_geglu_impl
 from megatron.core.fusions.fused_bias_swiglu import weighted_bias_swiglu_impl
 from megatron.core.fusions.fused_weighted_squared_relu import weighted_squared_relu_impl
-from megatron.core.inference.quantization.mxfp8_tensor import MXFP8Tensor
+from megatron.core.inference.quantization.mxfp8_tensor import MXFP8Tensor, validate_mxfp8_tensor
+from megatron.core.inference.quantization.utils import resolve_mxfp8_backend
 from megatron.core.inference.utils import InferenceMode
 from megatron.core.pipeline_parallel.fine_grained_activation_offload import (
     FineGrainedActivationOffloadingInterface as off_interface,
@@ -84,8 +85,16 @@ except ImportError:
 
 from megatron.core.inference.moe import ActivationType as McoreActivationType
 from megatron.core.inference.moe import InferenceGroupedGemmBackend, mcore_fused_moe, vllm_fused_moe
+from megatron.core.inference.moe.flashinfer_mxfp8 import (
+    FlashInferRoutedMXFP8Weight,
+    flashinfer_routed_mxfp8_moe,
+    prepare_routed_mxfp8_weights,
+    require_flashinfer_routed_mxfp8,
+    select_flashinfer_active_rows,
+)
 
 logger = logging.getLogger(__name__)
+_LOGGED_FLASHINFER_TOKEN_POLICIES: set[tuple[str, int, int]] = set()
 
 
 class GroupedLinearFc1Interface(Protocol):
@@ -1054,55 +1063,113 @@ class InferenceGroupedMLP(TEGroupedMLP):
             return McoreActivationType.SWIGLU
         raise ValueError(f"No mcore_fused_moe ActivationType mapping for activation_func={func}")
 
+    def _stack_mxfp8_linear_weight(self, linear_name: str, backend: str) -> MXFP8Tensor:
+        """Stack one linear's per-expert MXFP8 weights in canonical layout."""
+        linear = getattr(self, linear_name)
+        q_list, s_list = [], []
+        source_dtype: torch.dtype | None = None
+        for i in range(self.num_local_experts):
+            weight = getattr(linear, f'weight{i}')
+            if isinstance(weight, MXFP8Tensor):
+                mxfp8 = weight
+            elif hasattr(weight, 'data') and isinstance(weight.data, MXFP8Tensor):
+                mxfp8 = weight.data
+            else:
+                raise RuntimeError(
+                    f"Expected MXFP8Tensor for {linear_name}.weight{i}, "
+                    f"got {type(weight).__name__}. Was quantize_model_to_mxfp8 called?"
+                )
+            validate_mxfp8_tensor(
+                mxfp8, expected_backend=backend, tensor_name=f"{linear_name}.weight{i}"
+            )
+            if mxfp8.dtype is not None:
+                source_dtype = source_dtype or mxfp8.dtype
+                if mxfp8.dtype != source_dtype:
+                    raise RuntimeError(
+                        f"Conflicting source dtypes for {linear_name} expert weights: "
+                        f"{source_dtype} and {mxfp8.dtype}."
+                    )
+            q_list.append(mxfp8.data)
+            s_list.append(mxfp8.scale)
+        return MXFP8Tensor(
+            data=torch.stack(q_list, dim=0).contiguous(),
+            scale=torch.stack(s_list, dim=0).contiguous(),
+            dtype=source_dtype,
+            backend=backend,
+        )
+
+    @torch.inference_mode(False)
+    @torch.no_grad()
     def _build_concatenated_mxfp8_weights(self):
-        """Build stacked MXFP8 weight tensors from per-expert MXFP8Tensor attributes.
+        """Build contiguous expert stacks after checkpoint loading.
 
-        After quantize_model_to_mxfp8, each per-expert weight (weight0, weight1, ...)
-        has been replaced with an MXFP8Tensor. This method stacks their data and
-        scales into _fc1_weight / _fc2_weight for scaled_grouped_mm.
-
-        Note: this creates a contiguous copy since per-expert MXFP8Tensor attributes
-        are not contiguous across experts. This is a one-time cost at first forward.
-
-        Unlike _build_concatenated_weights, this does not create nn.Parameter views
-        back into the buffer — MXFP8 weights are not nn.Parameters (they are plain
-        MXFP8Tensor attributes set by quantize_model_to_mxfp8). This path is only
-        intended for non-colocated inference.
+        The torch backend rebinds each per-expert MXFP8Tensor to its stacked view.
+        FlashInfer keeps those canonical tensors for refit and derives a shuffled
+        Major-K stack for its routed-MoE kernel.
         """
 
+        use_flashinfer_routed = (
+            self.inference_grouped_gemm_backend == InferenceGroupedGemmBackend.FLASHINFER
+        )
+        backend = resolve_mxfp8_backend(self.inference_grouped_gemm_backend)
+        if use_flashinfer_routed:
+            require_flashinfer_routed_mxfp8()
         for linear_name, buf_name in [('linear_fc1', '_fc1_weight'), ('linear_fc2', '_fc2_weight')]:
             linear = getattr(self, linear_name)
-            q_list, s_list = [], []
-            for i in range(self.num_local_experts):
-                w = getattr(linear, f'weight{i}')
-                if isinstance(w, MXFP8Tensor):
-                    mxfp8 = w
-                elif hasattr(w, 'data') and isinstance(w.data, MXFP8Tensor):
-                    mxfp8 = w.data
-                else:
-                    raise RuntimeError(
-                        f"Expected MXFP8Tensor for {linear_name}.weight{i}, "
-                        f"got {type(w).__name__}. Was quantize_model_to_mxfp8 called?"
-                    )
-                q_list.append(mxfp8.data)
-                s_list.append(mxfp8.scale)
+            stacked_weight = self._stack_mxfp8_linear_weight(linear_name, backend)
+            if use_flashinfer_routed:
+                concatenated_weight = prepare_routed_mxfp8_weights(stacked_weight)
+                logger.info(
+                    "Prepared FlashInfer routed MXFP8 %s weights: experts=%d "
+                    "shape=(%d, %d)->(%d, %d)",
+                    linear_name,
+                    self.num_local_experts,
+                    concatenated_weight.logical_rows,
+                    concatenated_weight.logical_cols,
+                    concatenated_weight.padded_rows,
+                    concatenated_weight.padded_cols,
+                )
+            else:
+                concatenated_weight = stacked_weight
+            setattr(self, buf_name, concatenated_weight)
 
-            stacked_data = torch.stack(q_list, dim=0).contiguous()
-            stacked_scale = torch.stack(s_list, dim=0).contiguous()
+            # The torch path can redirect per-expert storage into the stacked
+            # representation. FlashInfer keeps the canonical Triton tensors intact
+            # because its shuffled Major-K weights are a derived representation.
+            if not use_flashinfer_routed:
+                for i in range(self.num_local_experts):
+                    w = getattr(linear, f'weight{i}')
+                    if isinstance(w, MXFP8Tensor):
+                        w.data = stacked_weight.data[i]
+                        w.scale = stacked_weight.scale[i]
+                    elif hasattr(w, 'data') and isinstance(w.data, MXFP8Tensor):
+                        w.data.data = stacked_weight.data[i]
+                        w.data.scale = stacked_weight.scale[i]
 
-            setattr(self, buf_name, MXFP8Tensor(data=stacked_data, scale=stacked_scale))
+    @torch.inference_mode(False)
+    @torch.no_grad()
+    def refresh_flashinfer_mxfp8_weights(self) -> bool:
+        """Refresh routed Major-K expert weights in place after an MXFP8 refit.
 
-            # Redirect per-expert weight .data to views into the stacked buffer,
-            # mirroring _build_concatenated_weights. This frees the original
-            # allocations while keeping the Parameter objects intact.
-            for i in range(self.num_local_experts):
-                w = getattr(linear, f'weight{i}')
-                if isinstance(w, MXFP8Tensor):
-                    w.data = stacked_data[i]
-                    w.scale = stacked_scale[i]
-                elif hasattr(w, 'data') and isinstance(w.data, MXFP8Tensor):
-                    w.data.data = stacked_data[i]
-                    w.data.scale = stacked_scale[i]
+        Returns whether derived FlashInfer weights were refreshed.
+        """
+        if (
+            not self._concatenated_weights_built
+            or self.inference_grouped_gemm_backend != InferenceGroupedGemmBackend.FLASHINFER
+        ):
+            return False
+        require_flashinfer_routed_mxfp8()
+        backend = resolve_mxfp8_backend(self.inference_grouped_gemm_backend)
+        for linear_name, buf_name in [('linear_fc1', '_fc1_weight'), ('linear_fc2', '_fc2_weight')]:
+            routed_weight = getattr(self, buf_name)
+            if not isinstance(routed_weight, FlashInferRoutedMXFP8Weight):
+                raise RuntimeError(
+                    f"Expected {buf_name} to contain FlashInferRoutedMXFP8Weight, "
+                    f"got {type(routed_weight).__name__}."
+                )
+            stacked_weight = self._stack_mxfp8_linear_weight(linear_name, backend)
+            prepare_routed_mxfp8_weights(stacked_weight, out=routed_weight)
+        return True
 
     @torch.inference_mode(False)  # needed for non-colocated inference.
     def _build_concatenated_weights(self):
@@ -1152,10 +1219,47 @@ class InferenceGroupedMLP(TEGroupedMLP):
         """FlashInfer fused MoE kernel for CUDA-graphed inference iterations."""
         assert HAVE_FLASHINFER, "flashinfer-python is required for FlashInfer forward path."
         assert probs.dtype == torch.float32, "FlashInfer forward path requires fp32 probabilities."
+        if isinstance(self._fc1_weight, FlashInferRoutedMXFP8Weight):
+            if not isinstance(self._fc2_weight, FlashInferRoutedMXFP8Weight):
+                raise TypeError("FC1 and FC2 must use the same FlashInfer MXFP8 format")
+            output = flashinfer_routed_mxfp8_moe(
+                hidden_states,
+                routing_map,
+                probs,
+                self._fc1_weight,
+                self._fc2_weight,
+                num_experts=self.num_local_experts * self.ep_group.size(),
+                local_expert_offset=self.ep_group.rank() * self.num_local_experts,
+                activation_type=self._flashinfer_activation_type.value,
+                out=(NVLSAllGatherVDispatcher._get_rsv_tensor() if self._nvls_dispatcher else None),
+                token_capacity=InferenceMode.flashinfer_token_capacity(),
+            )
+            return output, None
+        full_rows = hidden_states.shape[0]
+        token_capacity = InferenceMode.flashinfer_token_capacity()
+        active_rows, policy = select_flashinfer_active_rows(
+            full_rows, token_capacity=token_capacity
+        )
+        if token_capacity is not None:
+            policy_key = (policy, token_capacity, full_rows)
+            if policy_key not in _LOGGED_FLASHINFER_TOKEN_POLICIES:
+                _LOGGED_FLASHINFER_TOKEN_POLICIES.add(policy_key)
+                logger.info(
+                    "FlashInfer BF16 token policy: %s active_rows=%d full_rows=%d "
+                    "inferred_capacity=%d",
+                    policy,
+                    active_rows,
+                    full_rows,
+                    token_capacity,
+                )
+        if routing_map.dtype != torch.int32:
+            raise TypeError(
+                f"FlashInfer BF16 requires int32 expert indices; got {routing_map.dtype}"
+            )
         output = fused_moe.cutlass_fused_moe(
-            hidden_states,
-            routing_map.int(),
-            probs,
+            hidden_states[:active_rows],
+            routing_map[:active_rows],
+            probs[:active_rows],
             self._fc1_weight,
             self._fc2_weight,
             hidden_states.dtype,
@@ -1163,8 +1267,25 @@ class InferenceGroupedMLP(TEGroupedMLP):
             activation_type=self._flashinfer_activation_type,
             ep_size=self.ep_group.size(),
             ep_rank=self.ep_group.rank(),
-            output=NVLSAllGatherVDispatcher._get_rsv_tensor() if self._nvls_dispatcher else None,
+            # FlashInfer's BF16 CUTLASS kernel requires a BF16 output, while the
+            # NVLS reduce-scatter buffer is FP32. Full-capacity token_combine copies
+            # it there; bounded calls copy the produced prefix below.
+            output=None,
         )[0]
+        if active_rows < full_rows:
+            if not self._nvls_dispatcher:
+                raise RuntimeError("bounded FlashInfer BF16 rows require the NVLS dispatcher")
+            # Preserve the full symmetric-buffer shape consumed by token_combine while
+            # copying only the prefix produced by the bounded BF16 kernel. The
+            # ReduceScatter-V metadata limits reads to the compact active-token prefix.
+            rsv_output = NVLSAllGatherVDispatcher._get_rsv_tensor()
+            if rsv_output.shape[0] < active_rows or rsv_output.shape[1:] != output.shape[1:]:
+                raise ValueError(
+                    f"NVLS output buffer shape {tuple(rsv_output.shape)} cannot hold "
+                    f"bounded FlashInfer BF16 output {tuple(output.shape)}"
+                )
+            rsv_output[:active_rows].copy_(output)
+            return rsv_output, None
         return output, None
 
     def _mcore_fused_moe_forward(self, hidden_states, probs, routing_map):

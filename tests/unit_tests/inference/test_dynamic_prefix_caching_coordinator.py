@@ -312,9 +312,7 @@ class TestSubmitDoesNotDecodePrompt:
     def test_load_balanced_forwards_prompt_verbatim(self):
         """LOAD_BALANCED ignores hashes, so the prompt is never decoded."""
         coordinator = make_coordinator_direct(data_parallel_size=2)
-        coordinator.prefix_caching_coordinator_policy = (
-            PrefixCachingCoordinatorPolicy.LOAD_BALANCED
-        )
+        coordinator.prefix_caching_coordinator_policy = PrefixCachingCoordinatorPolicy.LOAD_BALANCED
         _identity, _metadata, prompt_frame = self._submit(coordinator)
         assert prompt_frame is self.UNDECODABLE_PROMPT
 
@@ -327,9 +325,7 @@ class TestSubmitDoesNotDecodePrompt:
     def test_metadata_frame_is_rewritten_with_server_request_id(self):
         """The client's request id is swapped for the coordinator's own."""
         coordinator = make_coordinator_direct(data_parallel_size=2)
-        coordinator.prefix_caching_coordinator_policy = (
-            PrefixCachingCoordinatorPolicy.LOAD_BALANCED
-        )
+        coordinator.prefix_caching_coordinator_policy = PrefixCachingCoordinatorPolicy.LOAD_BALANCED
         _identity, metadata_frame, _prompt = self._submit(coordinator)
         header, request_id, sampling_params = msgpack.unpackb(metadata_frame, raw=False)
         assert header == Headers.SUBMIT_REQUEST.value
