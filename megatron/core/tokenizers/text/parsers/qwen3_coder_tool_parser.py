@@ -43,6 +43,8 @@ _TYPE_ALIASES: dict[str, str] = {
 # Priority order from coerce_to_schema_type; the first type that converts wins.
 _TYPE_PRIORITY = ("null", "integer", "number", "boolean", "object", "array", "string")
 
+_pr15_announced = False
+
 
 def _is_json_finite(obj: Any) -> bool:
     """Whether a parsed JSON value is free of inf/nan.
@@ -318,6 +320,20 @@ class _Qwen3CoderToolParser:
         self, model_output: str, tools: list[ChatCompletionToolsParam] | None
     ) -> ExtractedToolCallInformation:
         """Extracts the tool calls from the text using <tool_call>...</tool_call> tags."""
+        # ArEsKay3/Megatron-LM PR #15. Announce once on the first real parse:
+        # which Megatron-LM tree got bind-mounted is invisible at runtime, and
+        # the pre-PR parser diverged from vLLM on anyOf coercion, whitespace
+        # handling and truncated function tags -- differences that are silent
+        # in the logs and only show up as reward drift across an A/B.
+        global _pr15_announced
+        if not _pr15_announced:
+            _pr15_announced = True
+            print(
+                "[pr15] qwen3-coder tool parser: vLLM 0.25.1 parity"
+                " (anyOf coercion + grammar) (PR#15 PRESENT)"
+                f" | src={__file__}",
+                flush=True,
+            )
         # Quick check to avoid unnecessary processing
         if self.tool_call_prefix not in model_output:
             return ExtractedToolCallInformation(

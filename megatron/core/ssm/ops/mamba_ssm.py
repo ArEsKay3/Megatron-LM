@@ -282,6 +282,9 @@ def _selective_scan_update_kernel(
     tl.store(state_ptrs, state, mask=(offs_m[:, None] < dim) & (offs_n[None, :] < dstate))
 
 
+_pr6598_announced = False
+
+
 def selective_state_update(
     state,
     x,
@@ -366,6 +369,21 @@ def selective_state_update(
             intermediate_ssm_states.stride(4),
         )
     else:
+        # NVIDIA/Megatron-LM PR #6598. Before the fix this branch also did
+        # `intermediate_ssm_states = x  # Dummy pointer`, and the kernel then
+        # wrote through that pointer at stride (0,0,0,0,0), corrupting x when a
+        # non-zero pid launched before pid 0. Announce once: which Megatron-LM
+        # tree got bind-mounted is otherwise invisible at runtime, and this is
+        # the exact branch the fix removes a line from.
+        global _pr6598_announced
+        if not _pr6598_announced:
+            _pr6598_announced = True
+            print(
+                "[pr6598] mamba selective_state_update: no-intermediate-state branch,"
+                " dummy pointer NOT set (PR#6598 PRESENT)"
+                f" | src={__file__}",
+                flush=True,
+            )
         int_state_strides = (0, 0, 0, 0, 0)
 
     batch, seq_len, nheads, dim = x.shape
