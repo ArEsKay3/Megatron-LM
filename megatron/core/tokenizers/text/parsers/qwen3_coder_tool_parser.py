@@ -266,7 +266,6 @@ class _Qwen3CoderToolParser:
 class Qwen3CoderToolParser(BaseParser):
     """Parser for Qwen3 Coder style tool calls."""
 
-    implicit_reasoning_end_markers = ("<tool_call>",)
     streaming_markers = ("<tool_call>", "<function=")
 
     @staticmethod
@@ -290,3 +289,26 @@ class Qwen3CoderToolParser(BaseParser):
             return information.get("content", ""), {"tool_calls": information.get("tool_calls", [])}
         else:
             return text, {}
+
+
+class Qwen3CoderToolCombinedParser(Qwen3CoderToolParser):
+    """Qwen3-Coder tool parser that also closes an unterminated reasoning block.
+
+    ``qwen3-coder-tool`` mirrors vLLM's standalone ``qwen3_coder`` tool parser
+    paired with a separate reasoning parser: the reasoning parser splits only
+    on ``</think>``, and a ``<tool_call>`` emitted before that tag stays inside
+    the reasoning text where the tool parser never sees it.
+
+    ``qwen3-coder-tool-combined`` mirrors vLLM's combined ``qwen3`` parser
+    engine instead: ``<tool_call>`` is an implicit end of reasoning, so the
+    text from that marker on becomes content and is parsed into a tool call.
+    The reasoning parser reads this attribute through
+    ``implicit_reasoning_end_markers`` when the request carries tools.
+
+    The two disagree on exactly one case -- a tool call produced without
+    closing ``</think>`` -- and downstream RL rewards may treat that case
+    differently, so the choice is made explicit in the parser list rather than
+    implied by the tool parser.
+    """
+
+    implicit_reasoning_end_markers = ("<tool_call>",)
