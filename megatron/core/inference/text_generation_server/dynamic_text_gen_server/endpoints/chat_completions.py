@@ -570,30 +570,90 @@ def _sanitize_chat_template_kwargs(raw_kwargs):
     return sanitized
 
 
+def _normalize_eos_token_ids(eos_token_ids):
+    """Normalize one or more EOS IDs to a validated set."""
+    if type(eos_token_ids) is int:
+        eos_token_ids = [eos_token_ids]
+    if (
+        not isinstance(eos_token_ids, (list, tuple, set, frozenset))
+        or not eos_token_ids
+        or not all(type(token_id) is int for token_id in eos_token_ids)
+    ):
+        raise ValueError("EOS token IDs must be a non-empty integer or collection of integers.")
+    return frozenset(eos_token_ids)
+
+
+def _model_eos_token_ids(tokenizer):
+    """Return the model-level EOS token IDs.
+
+    Honors `generation_config.eos_token_id` (which HF may declare as a LIST, e.g.
+    `[2, 11]`) in addition to the tokenizer's single `eod`/`eos_id`. The
+    generation_config is read off the tokenizer if present (HF tokenizers attach
+    it; other tokenizers won't).
+    """
+    ids = set()
+    for attr in ("eod", "eos_id"):
+        value = getattr(tokenizer, attr, None)
+        if value is not None:
+            ids.add(int(value))
+    gen_cfg = getattr(tokenizer, "generation_config", None)
+    if gen_cfg is not None and hasattr(gen_cfg, "get"):
+        eos = gen_cfg.get("eos_token_id")
+        if isinstance(eos, int) and not isinstance(eos, bool):
+            ids.add(eos)
+        elif isinstance(eos, (list, tuple)):
+            ids.update(int(e) for e in eos if isinstance(e, int) and not isinstance(e, bool))
+    return frozenset(ids)
+
+
+def _suffix_tokens_after_prefix(eos_token_ids, template_prefix_token_ids, current_tokens):
+    """Return the current-turn suffix, beginning at the prefix's final EOS."""
+    # Count the number of EOS tokens in the retokenized prefix.
+    eos_token_ids = _normalize_eos_token_ids(eos_token_ids)
+    eos_count = sum(token_id in eos_token_ids for token_id in template_prefix_token_ids)
+    if eos_count <= 0:
+        raise ValueError(
+            "Could not locate an EOS-delimited previous turn: the chat template's turn "
+            f"terminator is not among the model EOS token IDs {sorted(eos_token_ids)}."
+        )
+
+    # Scan current_tokens from beginning to end. Return the suffix after eos_count
+    # EOS tokens have been seen.
+    # This guards against changes in templating or even upstream modification of
+    # the prefix tokens to ensure we retrieve the current turn's suffix / prompt.
+    seen_eos = 0
+    for position, token_id in enumerate(current_tokens):
+        if token_id in eos_token_ids:
+            seen_eos += 1
+            if seen_eos == eos_count:
+                return current_tokens[position:]
+    raise ValueError(
+        f"Expected {eos_count} EOS token(s) before the new turn, but found only {seen_eos}."
+    )
+
+
 def _replace_prefix_tokens(
-    eos_token_id,
+    eos_token_ids,
     previous_turn_token_ids,
-    retokeenized_previous_turn_token_ids,
+    retokenized_previous_turn_token_ids,
     current_turn_token_ids,
 ):
     """Replace the token ids that are associated with the previous turn with the actual tokens
     from the previous generation (rather than the ones from the chat template application)."""
 
-    # Strip the EOS from the previous turn token ids if it exists
-    if previous_turn_token_ids and previous_turn_token_ids[-1] == eos_token_id:
-        previous_turn_token_ids = previous_turn_token_ids[:-1]
+    if not previous_turn_token_ids:
+        return current_turn_token_ids
 
-    # Find the last EOS token id in the previous turn token ids
-    last_eos_token_id_index = len(retokeenized_previous_turn_token_ids) - 1
-    # Note that the current conversation stat may be shorter than the previous conversation state.
-    scan_len = min(len(retokeenized_previous_turn_token_ids), len(current_turn_token_ids))
-    for i in reversed(range(scan_len)):
-        if current_turn_token_ids[i] == eos_token_id:
-            last_eos_token_id_index = i
-            break
+    eos_token_ids = _normalize_eos_token_ids(eos_token_ids)
 
-    # Replace the current turn token ids with the tokens from the previous generation
-    current_turn_additional_token_ids = current_turn_token_ids[last_eos_token_id_index:]
+    # Find the boundary of the current sequence's prompt.
+    current_turn_additional_token_ids = _suffix_tokens_after_prefix(
+        eos_token_ids, retokenized_previous_turn_token_ids, current_turn_token_ids
+    )
+    if previous_turn_token_ids[-1] in eos_token_ids:
+        # Preserve the exact EOS emitted previously. The rendered suffix begins
+        # with its own boundary EOS, which may be a different accepted EOS ID.
+        current_turn_additional_token_ids = current_turn_additional_token_ids[1:]
 
     # Return the previous turn token ids + the current turn token ids
     return previous_turn_token_ids + current_turn_additional_token_ids
@@ -960,6 +1020,12 @@ try:
                                     "from the previous Megatron-Inference response."
                                 )
                             previous_prompt_token_ids = last_assistant_message["prompt_token_ids"]
+                    eos_token_ids = _model_eos_token_ids(tokenizer)
+                    assert eos_token_ids, "Your tokenizer must have an EOS token ID!"
+                    # _replace_prefix_tokens_metadata's engine-side stager path only
+                    # stores one representative id (PREFIX_EOS_TOKEN_ID_FIELD); it
+                    # predates multi-EOS detection and is out of scope here, so keep
+                    # it on the original single id rather than changing its contract.
                     eos_token_id = tokenizer.eos_id
                     assert eos_token_id is not None, "Your tokenizer must have an EOS token ID!"
 
@@ -1010,12 +1076,19 @@ try:
                             previous_prompt_token_ids
                             + last_assistant_message["generation_token_ids"]
                         )
-                        prompt_tokens = _replace_prefix_tokens(
-                            eos_token_id,
-                            previous_turn_token_ids,
-                            retokenized_previous_turn_token_ids,
-                            prompt_tokens,
-                        )
+                        try:
+                            prompt_tokens = _replace_prefix_tokens(
+                                eos_token_ids,
+                                previous_turn_token_ids,
+                                retokenized_previous_turn_token_ids,
+                                prompt_tokens,
+                            )
+                        except ValueError as exc:
+                            logger.warning(
+                                "Skipping prefix replacement, falling back to the "
+                                "retokenized prompt: %s",
+                                exc,
+                            )
 
             else:
                 if media_slots:
