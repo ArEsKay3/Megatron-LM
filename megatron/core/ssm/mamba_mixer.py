@@ -30,6 +30,7 @@ from megatron.core.ssm.ops.intermediate_extraction import (
     scatter_intermediate_ssm,
 )
 from megatron.core.ssm.ops.mamba_ssm import selective_state_update
+from megatron.core.ssm.ops.vllm_grouped_rmsnorm import compiled_grouped_gated_rmsnorm
 from megatron.core.ssm.ssm_inference import SSMDynamicInferenceMixin
 from megatron.core.ssm.utils import _split_tensor_factory
 from megatron.core.tensor_parallel import get_cuda_rng_tracker
@@ -113,6 +114,20 @@ class ExtendedRMSNorm(RMSNormGated):
     """
     RMSNormGated with sharded state dict.
     """
+
+    def forward(self, x: torch.Tensor, z: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """Use the reference's compiled grouped gate/norm path during inference."""
+        if (
+            not self.training
+            and z is not None
+            and not self.norm_before_gate
+            and self.group_size is not None
+        ):
+            shape = x.shape
+            return compiled_grouped_gated_rmsnorm(
+                self, x.reshape(-1, shape[-1]), z.reshape(-1, shape[-1])
+            ).view(shape)
+        return super().forward(x, z)
 
     def sharded_state_dict(self, prefix="", sharded_offsets=(), metadata=None):
         """Sharding along axis 0, bias not sharded"""

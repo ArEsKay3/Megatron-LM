@@ -127,6 +127,28 @@ It does not establish complete Mamba-layer, full-model, decode, graph, or
 sampling parity. All saved results use zero differing bytes as the criterion;
 no numeric tolerance or token-only shortcut was used.
 
+## Grouped gated normalization (2026-09-25)
+
+Inference with gate-before-norm now follows the reference's Torch operation
+order and compiles the gate, group reduction, cast, and weight multiplication
+together. The weight and group size remain module attributes, so their compiler
+specialization matches vLLM's. Passing them as independent dynamic arguments
+produced a few differing bytes in the first diagnostic and was rejected.
+Training and gate-after-norm retain their existing path.
+
+GB300 job 4013222 passed 96 short-input/shape-control cases in eager and compiled
+mode. Job 4013575 then tested the actual `ExtendedRMSNorm.forward` integration
+on all 52 captured inputs, including full long-context chunks and original
+strides: every compiled output was byte-identical to the independently compiled
+installed vLLM method. Eager reference comparisons also passed. The singleton
+shape controls are not actual cached-decode validation.
+
+`examples/inference/parity/replay_mamba_norm.py` accepts `--minf`, `--vllm`, and
+`--out-dir` for full-tensor capture runs. It preserves input strides, records
+reference source hashes and runtime versions, and fails on any differing byte.
+Whole-model compilation can change fusion boundaries; its validation remains
+separate and pending.
+
 ## Remaining work
 
 | Stage | Required proof |
