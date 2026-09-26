@@ -1,15 +1,14 @@
 # Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
-"""Experimental Nemotron-H primitive parity with the installed vLLM reference.
+"""Experimental Nemotron-H parity with the pinned vLLM numerical profile.
 
 This adapter keeps Megatron parameters and state management. It deliberately
-uses the reference primitive implementations and their normal dispatch/config
+uses locally maintained reference primitives and their normal dispatch/config
 selection. No Triton tuning winner is pinned here.
 """
 
 import os
 from contextlib import nullcontext
-from importlib.metadata import version
 
 import torch
 import torch.distributed as dist
@@ -130,8 +129,6 @@ class VllmHybridParity:
 
     def __init__(self, stack):
         config = stack.config
-        if version('vllm') != '0.25.1':
-            raise RuntimeError('The parity reference requires vLLM 0.25.1 in this environment')
         if (
             config.pipeline_model_parallel_size != 1
             or config.context_parallel_size != 1
@@ -149,11 +146,11 @@ class VllmHybridParity:
         if set(stack.layer_type_list) - {Symbols.MAMBA, Symbols.MOE, Symbols.ATTENTION}:
             raise ValueError('vLLM parity supports Mamba, ReLU-squared MoE, and attention only')
 
-        from vllm import _custom_ops
-        from vllm.distributed.device_communicators.cuda_communicator import CudaCommunicator
+        from megatron.core.inference.parity_kernels.collectives import CudaCommunicator
+        from megatron.core.inference.parity_kernels.ops import load_ops
 
         configure_ssd_autotune_cache()
-        self.ops = _custom_ops
+        self.ops = load_ops()
         self.compile_norm = config.inference_vllm_compile_norm
         self.tp_group = stack.pg_collection.tp
         self.tp_size = dist.get_world_size(self.tp_group)
@@ -161,12 +158,7 @@ class VllmHybridParity:
         ranks = dist.get_process_group_ranks(self.tp_group)
         self.cpu_group = dist.new_group(ranks=ranks, backend='gloo', use_local_synchronization=True)
         self.communicator = CudaCommunicator(
-            self.cpu_group,
-            torch.device('cuda', torch.cuda.current_device()),
-            self.tp_group,
-            'tp_megatron_vllm_parity',
-            ranks,
-            dist.get_world_size(),
+            self.cpu_group, torch.device('cuda', torch.cuda.current_device())
         )
         self.observer = None
         self._compiled_norms_warmed = False
@@ -268,36 +260,16 @@ class VllmHybridParity:
 
     def moe(self, layer, x):
         """TP-sharded experts, with reference routing/activation/weighting order."""
-        from vllm.model_executor.layers.fused_moe.activation import MoEActivation
-        from vllm.model_executor.layers.fused_moe.fused_moe import fused_experts
-        from vllm.model_executor.layers.fused_moe.router.grouped_topk_router import grouped_topk
+        from megatron.core.inference.parity_kernels.moe import fused_experts, grouped_topk
 
         router = layer.router
         logits = torch.mm(x, router.weight.T, out_dtype=torch.float32)
-        weights, ids = grouped_topk(
-            x,
-            logits,
-            topk=layer.config.moe_router_topk,
-            renormalize=True,
-            num_expert_group=1,
-            topk_group=1,
-            scoring_func='sigmoid',
-            routed_scaling_factor=1.0,
-            e_score_correction_bias=router.expert_bias,
-        )
+        weights, ids = grouped_topk(logits, router.expert_bias, layer.config.moe_router_topk)
         experts = layer.experts
         if not experts._concatenated_weights_built:
             experts._build_concatenated_weights()
             experts._concatenated_weights_built = True
-        routed = fused_experts(
-            x,
-            experts._fc1_weight,
-            experts._fc2_weight,
-            weights,
-            ids,
-            activation=MoEActivation.RELU2_NO_MUL,
-            global_num_experts=layer.config.num_moe_experts,
-        )
+        routed = fused_experts(x, experts._fc1_weight, experts._fc2_weight, weights, ids)
         shared = layer.shared_experts
         shared_up = F.linear(x, shared.linear_fc1.weight)
         shared_out = F.linear(F.relu(shared_up).square(), shared.linear_fc2.weight)

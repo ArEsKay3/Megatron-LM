@@ -130,6 +130,19 @@ ssm = [
     "mamba-ssm",
     "causal-conv1d~=1.5",
 ]
+inference-parity = [
+    "apache-tvm-ffi==0.1.9",
+    "cuda-bindings==13.3.1",
+    "cuda-pathfinder==1.5.6",
+    "einops>=0.8.2",
+    "ninja>=1.13.0",
+    "nvidia-cutlass-dsl[cu13]==4.5.2",
+    "quack-kernels==0.4.1",
+    "torch>=2.11",
+    "torch-c-dlpack-ext==0.1.5",
+    "triton==3.6.0",
+    "typing-extensions>=4.16.0",
+]
 
 [dependency-groups]
 test = [
@@ -178,6 +191,8 @@ batch_invariant = ["deep_gemm"]
 no_pypi_wheels = ["flash_mla", "emerging_optimizers", "deep_gemm"]
 
 [tool.uv]
+# The audited inference worker uses CUTLASS DSL 4.5.2; dev cuDNN pins 4.5.0.
+conflicts = [[{ extra = "dev" }, { extra = "inference-parity" }]]
 managed = true
 default-groups = ["linting", "build", "test"]
 no-build-isolation-package = [

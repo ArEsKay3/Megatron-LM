@@ -6,6 +6,70 @@ acceptance criterion for this branch. **The seven audited scenarios now pass
 byte-for-byte under matched autotuning choices, with equivalent native selection
 policies.** This result covers the TP4/EP1/ETP4 profile described below.
 
+## Self-contained runtime (2026-09-26)
+
+Parity mode no longer imports the vLLM package or its compiled extensions.
+The original adapter reused reference primitives to establish the numerical
+execution order. Those primitives now live in
+`megatron/core/inference/parity_kernels`: BF16 MoE routing/GEMMs, RMSNorm,
+custom/symmetric-memory/NCCL collectives, and the pinned FlashAttention 4
+implementation. Licenses, source revisions and original hashes are included.
+The existing `inference_vllm_*` option names still select the same numerical
+profile. No new Megatron model config is required.
+
+The CUDA extension compiles locally before graph capture. It needs a CUDA
+toolkit with nvcc, a C++20 compiler, Ninja, and PyTorch 2.11+. The validated
+runtime remains PyTorch 2.11.0+cu130, Triton 3.6.0, CUDA 13, and GB300.
+No source downloads occur at inference runtime. Provision the independent
+dependencies inside the policy-worker container before starting Ray:
+
+```bash
+MEGATRON_WORKER_PY=/opt/ray_venvs/nemo_rl.models.policy.workers.megatron_policy_worker.MegatronPolicyWorker/bin/python
+MEGATRON_SOURCE=/opt/nemo-rl/3rdparty/Megatron-Bridge-workspace/Megatron-Bridge/3rdparty/Megatron-LM
+uv pip install --python "$MEGATRON_WORKER_PY" \
+  -r "$MEGATRON_SOURCE/requirements/inference-parity.txt"
+"$MEGATRON_WORKER_PY" -c \
+  'from megatron.core.inference.parity_kernels.ops import load_ops; load_ops()'
+```
+
+Keep the container's matching CUDA-enabled PyTorch/NCCL build. The dependency
+file supplies the CUDA 13 CUTLASS DSL libraries explicitly. `TORCH_EXTENSIONS_DIR`
+can point at a writable build cache, and `MAX_JOBS` bounds compiler concurrency.
+Every node must have the same dependencies and source. Building an image with
+these installed avoids changing ephemeral worker environments at each launch.
+The old reference-worker `site.addsitedir` / `.pth` mount is unnecessary.
+
+For a package installation from this branch checkout, select the equivalent
+`.[inference-parity]` extra. With the repository uv project, select
+`--extra inference-parity`; its torch/triton overrides intentionally retain
+the container-provided packages. The `dev` extra's cuDNN dependency pins
+CUTLASS DSL 4.5.0, while this audited profile uses 4.5.2. These extras are
+declared mutually exclusive; default development pins are unchanged.
+
+Validation of this port is separate from the original audit:
+
+- Job 4022228: 19 MoE shapes, 7 attention shapes, 12 norm checks, 12 MoE graph
+  replays, and 26 collective comparisons on each of four ranks match vLLM.
+  Local execution ran before exposing the reference package.
+- Job 4022390 versus reference 4020425: all seven scenarios again pass
+  byte-for-byte, including 92 logit events, 2,116 Mamba states, 552 KV states,
+  returned tokens/logprobs and 184 observer controls. Autotuning controls and
+  the scope of the original native-policy validation remain explicit.
+- Portable regression checks are in
+  `tests/unit_tests/determinism/kernels/test_local_parity_kernels.py` and block
+  vLLM imports throughout changing-input eager/graph replay. Run on four GPUs:
+
+  ```bash
+  torchrun --standalone --nproc-per-node=4 \
+    tests/unit_tests/determinism/kernels/test_local_parity_kernels.py
+  ```
+
+The reference profile is native autotuning, BF16, full attention, ReLU-squared
+experts, and one NVLink node with EP1/ETP=TP. Alternative reference environment
+profiles (including batch invariance and forced all-reduce algorithms) are
+outside the audited default. vLLM is needed only for optional reference-engine
+comparison scripts, never for serving this parity mode.
+
 ## Completed audit (2026-09-26)
 
 Source-v21, candidate job 4020742 versus reference 4020425, passes prompts of

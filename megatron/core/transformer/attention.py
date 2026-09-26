@@ -1066,7 +1066,7 @@ class Attention(MegatronModule, ABC):
         assert block_table is not None
 
         if self.config.inference_vllm_parity:
-            from vllm.vllm_flash_attn import flash_attn_varlen_func
+            from megatron.core.inference.parity_kernels.cute.interface import _flash_attn_fwd
 
             if softmax_offset is not None or self.config.window_size is not None:
                 raise ValueError('vLLM parity currently requires full attention without sinks')
@@ -1078,7 +1078,7 @@ class Attention(MegatronModule, ABC):
                 query = query[: seqlens_k.shape[0] * max_seqlen_q]
             elif num_active_tokens is not None:
                 query = query[:num_active_tokens]
-            output = flash_attn_varlen_func(
+            output, _ = _flash_attn_fwd(
                 query,
                 k,
                 v,
@@ -1086,10 +1086,11 @@ class Attention(MegatronModule, ABC):
                 max_seqlen_q=max_seqlen_q,
                 max_seqlen_k=max_seqlen_k,
                 seqused_k=seqlens_k,
-                block_table=block_table,
+                page_table=block_table,
                 softmax_scale=q.shape[-1] ** -0.5,
                 causal=True,
-                fa_version=4,
+                num_splits=0,
+                return_lse=False,
             )
             if output.shape[0] < q.shape[0]:
                 padded_output = torch.zeros_like(q.squeeze(1))

@@ -1,0 +1,1106 @@
+{
+  "vllm_tag": "v0.25.1",
+  "flash_attention_commit": "2c839c33742309ec41e620bf837495ec9926c56e",
+  "files": [
+    {
+      "source": "vllm-0.25.1/LICENSE",
+      "destination": "LICENSE.vllm",
+      "upstream_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/LICENSE",
+      "destination": "LICENSE.flash-attention",
+      "upstream_sha256": "8c9ccb96c065e706135b6cbad279b721da6156e51f3a5f27c6b3329af9416d73"
+    },
+    {
+      "source": "vllm-0.25.1/csrc/libtorch_stable/moe/moe_ops.h",
+      "destination": "csrc/libtorch_stable/moe/moe_ops.h",
+      "upstream_sha256": "98c0a6bec450a4e44992810231914635f4c37fb9567c66d99f5b67788b8f7227"
+    },
+    {
+      "source": "vllm-0.25.1/csrc/libtorch_stable/ops.h",
+      "destination": "csrc/libtorch_stable/ops.h",
+      "upstream_sha256": "83eea40a361bbc192dab50bbafbe9496a15951706f0e20f5b5148094a7d39d28"
+    },
+    {
+      "source": "vllm-0.25.1/csrc/libtorch_stable/custom_all_reduce.cu",
+      "destination": "csrc/libtorch_stable/custom_all_reduce.cu",
+      "upstream_sha256": "06c19a4a22a6ff1663365e557e7e8f6b88ec5a05b07e86285cfe26aa84975bf2"
+    },
+    {
+      "source": "vllm-0.25.1/csrc/custom_all_reduce.cuh",
+      "destination": "csrc/custom_all_reduce.cuh",
+      "upstream_sha256": "9b73571484ca4ae00a86c9380a3f6189aa8e30ceb43bc0f5198c9569e8996e5d"
+    },
+    {
+      "source": "vllm-0.25.1/csrc/libtorch_stable/torch_utils.h",
+      "destination": "csrc/libtorch_stable/torch_utils.h",
+      "upstream_sha256": "f619e1943039a67a3254f7e0679e1f3e0faa9d8fccae795f3b20df9e91a8a429"
+    },
+    {
+      "source": "vllm-0.25.1/csrc/libtorch_stable/moe/grouped_topk_kernels.cu",
+      "destination": "csrc/libtorch_stable/moe/grouped_topk_kernels.cu",
+      "upstream_sha256": "20a37bf18816bd6cc9f3ef2c9e8ef4a5453b23f4c869e1035506fa2c11721c96"
+    },
+    {
+      "source": "vllm-0.25.1/csrc/libtorch_stable/moe/moeTopKFuncs.cuh",
+      "destination": "csrc/libtorch_stable/moe/moeTopKFuncs.cuh",
+      "upstream_sha256": "391d32c800d334d0bf880fc74b2a0a59292b1484cded3cda4a52026732b7df80"
+    },
+    {
+      "source": "vllm-0.25.1/csrc/libtorch_stable/moe/moe_align_sum_kernels.cu",
+      "destination": "csrc/libtorch_stable/moe/moe_align_sum_kernels.cu",
+      "upstream_sha256": "e2bdb00824895cf7f43569159910ca369db3d7ad1da08c51cff2325d03d2e68b"
+    },
+    {
+      "source": "vllm-0.25.1/csrc/libtorch_stable/quantization/vectorization.cuh",
+      "destination": "csrc/libtorch_stable/quantization/vectorization.cuh",
+      "upstream_sha256": "6b28cf0cfe9e948c989274adbfa46c6cdec393bf245efb49678213eca15171e7"
+    },
+    {
+      "source": "vllm-0.25.1/csrc/libtorch_stable/dispatch_utils.h",
+      "destination": "csrc/libtorch_stable/dispatch_utils.h",
+      "upstream_sha256": "7ec1bb7b43cee1e9d8e8150c799618f53e37b7060b061f628049f454d6272e76"
+    },
+    {
+      "source": "vllm-0.25.1/csrc/libtorch_stable/core/math.hpp",
+      "destination": "csrc/libtorch_stable/core/math.hpp",
+      "upstream_sha256": "b80a3ffbbe5944c865331da95261696e430981b623d447adf24f272241104f59"
+    },
+    {
+      "source": "vllm-0.25.1/csrc/cuda_compat.h",
+      "destination": "csrc/cuda_compat.h",
+      "upstream_sha256": "959bc9e0e73e020d777530b18bf12160d35cc4eb976335955395729700b2f975"
+    },
+    {
+      "source": "vllm-0.25.1/csrc/libtorch_stable/layernorm_kernels.cu",
+      "destination": "csrc/libtorch_stable/layernorm_kernels.cu",
+      "upstream_sha256": "faaf442f9a520eb7d636acac06b7b52a1765da9b5db13d0d818ff2e1e2537a82"
+    },
+    {
+      "source": "vllm-0.25.1/csrc/libtorch_stable/quantization/vectorization_utils.cuh",
+      "destination": "csrc/libtorch_stable/quantization/vectorization_utils.cuh",
+      "upstream_sha256": "991d501211c90a6a5c88d1062723b04c73ca1418d84f8aa07e255bd97128dff8"
+    },
+    {
+      "source": "vllm-0.25.1/csrc/libtorch_stable/type_convert.cuh",
+      "destination": "csrc/libtorch_stable/type_convert.cuh",
+      "upstream_sha256": "9274a7464c53de92976f6b5a19cc548b315f5d85e68b825515a6ff1fd73be4ca"
+    },
+    {
+      "source": "vllm-0.25.1/csrc/core/batch_invariant.hpp",
+      "destination": "csrc/core/batch_invariant.hpp",
+      "upstream_sha256": "0f7d5937bf059a1fe2a13d8710667d3ec826ba0bf221c0137e477773ad6049bd"
+    },
+    {
+      "source": "vllm-0.25.1/csrc/libtorch_stable/cub_helpers.h",
+      "destination": "csrc/libtorch_stable/cub_helpers.h",
+      "upstream_sha256": "91bd3c5f862387c475806a13245f0353369439a4e83962d2798e820314c48c31"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/__init__.py",
+      "destination": "cute/__init__.py",
+      "upstream_sha256": "50713012c3a5e8045f368672342aea6eeeb3b3ce0968cb5639b1f158b9499487"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/ampere_helpers.py",
+      "destination": "cute/ampere_helpers.py",
+      "upstream_sha256": "cadac170a7da379e27c36d044360480d710cfa88d082dad2b9decd58e4847111"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/barrier.py",
+      "destination": "cute/barrier.py",
+      "upstream_sha256": "767af807aa7521b8d15ee6c9534f4745a7ad2224b0da2b816cc49ccb9ea6c119"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/bench_utils.py",
+      "destination": "cute/bench_utils.py",
+      "upstream_sha256": "a655fbaccd3d23de2cacca6e8a7ae7782aa4ee3200cea94f9c73585f2ffe50cc"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/benchmark.py",
+      "destination": "cute/benchmark.py",
+      "upstream_sha256": "43bb07eb55d46a402abab8c50984eb39d4cf8f19a11ad79cd0291919614a9101"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/benchmark_flash_attention_fp8.py",
+      "destination": "cute/benchmark_flash_attention_fp8.py",
+      "upstream_sha256": "adef8e3e65f76c2a4718ece450c063ed11755e215c9a672a0d261ea24ec92b7a"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/blackwell_helpers.py",
+      "destination": "cute/blackwell_helpers.py",
+      "upstream_sha256": "16eb08f592e33208546743e0d25c940afb899d770f35af52caac2fbcb73d7fee"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/block_info.py",
+      "destination": "cute/block_info.py",
+      "upstream_sha256": "9f140eaa9e528dc1c35e25da1de2cc43dbc20747d5187f8c1fc2c60c8644fba8"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/block_sparse_utils.py",
+      "destination": "cute/block_sparse_utils.py",
+      "upstream_sha256": "27718205ec642ea6c2cef7fafab0ce21bc7f2ecf5ed554a965d5f803539f80d2"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/block_sparsity.py",
+      "destination": "cute/block_sparsity.py",
+      "upstream_sha256": "bdbdae10f4b6eb4958907244b2a37664536e2c6da5ad1b562f82388e458ed906"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/cache_utils.py",
+      "destination": "cute/cache_utils.py",
+      "upstream_sha256": "ded91c4f65ea434386eacf200cbcc9f1c604ad8b9b7dcbbe80e3264d794c00df"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/compute_block_sparsity.py",
+      "destination": "cute/compute_block_sparsity.py",
+      "upstream_sha256": "87e0970a764d55cbd67226674a9dc0565a160f662aa2a6152e500fbb1eebc171"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/copy_utils.py",
+      "destination": "cute/copy_utils.py",
+      "upstream_sha256": "0f563eeeb6654602d1541f7202b7b88386c4dbdbd24ad6b0825834d65e508c09"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/cute_dsl_ptxas.py",
+      "destination": "cute/cute_dsl_ptxas.py",
+      "upstream_sha256": "21f0674c9f5a99d7c339092e49d5822d387b0a4673888becff1ac073cb5ac619"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/cute_dsl_utils.py",
+      "destination": "cute/cute_dsl_utils.py",
+      "upstream_sha256": "d9a05367193aa4f54875547b7ebc9be7d26b8a30d1910b354a6b9edfb5127990"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/fa_logging.py",
+      "destination": "cute/fa_logging.py",
+      "upstream_sha256": "bc71edfa4b1cb7af64b78def09e790ff4c6fe64ab4fcf8e3d9699f44e8d3c0a0"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/fast_math.py",
+      "destination": "cute/fast_math.py",
+      "upstream_sha256": "7e5f822bf4d0ba36967558f3ae9a1408b410cb726c31222cd61703569d1be738"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/flash_bwd.py",
+      "destination": "cute/flash_bwd.py",
+      "upstream_sha256": "a5bc5add5f909710a6485471bce31485b3a6b2992bc8c7051ef3df0a3c7710b3"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/flash_bwd_postprocess.py",
+      "destination": "cute/flash_bwd_postprocess.py",
+      "upstream_sha256": "5ee54addf393b512ad7c263982e2b43b8dcb8594790481f7923d10b465a0d826"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/flash_bwd_preprocess.py",
+      "destination": "cute/flash_bwd_preprocess.py",
+      "upstream_sha256": "d1a1bc7df2f3b8a553fc494e9ee9a920eac77c621ad3a5fc24ce00e22160cc8b"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/flash_bwd_sm100.py",
+      "destination": "cute/flash_bwd_sm100.py",
+      "upstream_sha256": "bcf3df051769e1d5cd7b8d22466702587c6b3a32fc18606666e06017cf57f616"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/flash_bwd_sm120.py",
+      "destination": "cute/flash_bwd_sm120.py",
+      "upstream_sha256": "ad2d802c97dbf654fd03724bcfa91702b18acec8518e5dd4a33f137ba238bf7d"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/flash_bwd_sm90.py",
+      "destination": "cute/flash_bwd_sm90.py",
+      "upstream_sha256": "9267b741fca2ecf4cfee46dfff00a93b41618764f125f60818b9d859f3e53e62"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/flash_fwd.py",
+      "destination": "cute/flash_fwd.py",
+      "upstream_sha256": "844b9e8f75e9b194867c073f3c9165937de1054a0b45b67ca7156960052f6234"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/flash_fwd_combine.py",
+      "destination": "cute/flash_fwd_combine.py",
+      "upstream_sha256": "e7e65d6a6ff0586fc865d1d40f05e456bc22bd1450f72bb0ba8ed4d7eee065fc"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/flash_fwd_mla_sm100.py",
+      "destination": "cute/flash_fwd_mla_sm100.py",
+      "upstream_sha256": "541abe51feb12b778b03fae480bdf658890dc91c356ab3c0ba427ed7799d2d74"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/flash_fwd_sm100.py",
+      "destination": "cute/flash_fwd_sm100.py",
+      "upstream_sha256": "035dacccbb93cbe90271ccf806c9d58ce9ee276d1ca595b60053671f46bffe3c"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/flash_fwd_sm120.py",
+      "destination": "cute/flash_fwd_sm120.py",
+      "upstream_sha256": "15e43bb9597e6aa94ae75248d237e2a795a538fd3bde89a47fbd841b149ab375"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/flash_fwd_sm90.py",
+      "destination": "cute/flash_fwd_sm90.py",
+      "upstream_sha256": "139d239d69296e622c43e8759c20107c6b9714a5935167a592d6ddca91a04ccc"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/hopper_helpers.py",
+      "destination": "cute/hopper_helpers.py",
+      "upstream_sha256": "5d93fe7c60b3865719cf83aec3f79b06f76299fc2634b4f3811d56e7b0d358ed"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/interface.py",
+      "destination": "cute/interface.py",
+      "upstream_sha256": "9ae16942bff2b8f7705b469eafbd8c82b96f93e4a3264c78683f86342bb5ebdf"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/mask.py",
+      "destination": "cute/mask.py",
+      "upstream_sha256": "a295eb3241e9762f980d490e23cab9f460392f054ad57c39159dbfb9cf4abec6"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/mma_sm100_desc.py",
+      "destination": "cute/mma_sm100_desc.py",
+      "upstream_sha256": "ac6ec28b2f1a4b797c391a7807b88f83b430452d418262c3dfa7b0f3516e39f9"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/named_barrier.py",
+      "destination": "cute/named_barrier.py",
+      "upstream_sha256": "e9e2680224af6ba8260e36aae4bb2fdcf589b75bd0d07050df7c4c59e1c716dd"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/pack_gqa.py",
+      "destination": "cute/pack_gqa.py",
+      "upstream_sha256": "b111f91c56406850918a7b9a4bbbc6d391f79ef608f1c0e104d525a979ede8db"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/paged_kv.py",
+      "destination": "cute/paged_kv.py",
+      "upstream_sha256": "1a0642add392a7ff20db9270b9b136848f5498a1c977ca71c68cbc0471058251"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/pipeline.py",
+      "destination": "cute/pipeline.py",
+      "upstream_sha256": "849bce91c72be0a5c7458979e10c8290f45e05253a83600e30fb9540c61ed56a"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/seqlen_info.py",
+      "destination": "cute/seqlen_info.py",
+      "upstream_sha256": "74df5465bfbb8ea1bd0eb0633c2f25601f356e1fa822f9d382a89132f8dcabeb"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/sm100_hd256_2cta_fmha_backward.py",
+      "destination": "cute/sm100_hd256_2cta_fmha_backward.py",
+      "upstream_sha256": "b4ee82174ebf9286aee2d9acbc2bdbf2909f845eb43338dec27d61c03c55cfa1"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/sm100_hd256_2cta_fmha_backward_dkdvkernel.py",
+      "destination": "cute/sm100_hd256_2cta_fmha_backward_dkdvkernel.py",
+      "upstream_sha256": "862a96525f2ece255b0d43b140b1c914110fe317edc31824a43498bd0f8206db"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/sm100_hd256_2cta_fmha_backward_dqkernel.py",
+      "destination": "cute/sm100_hd256_2cta_fmha_backward_dqkernel.py",
+      "upstream_sha256": "8aa6075bfaeae69a319ba8b9c5fc1785dce9b155dd83074db1756eb4181afbb4"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/sm100_hd256_2cta_fmha_forward.py",
+      "destination": "cute/sm100_hd256_2cta_fmha_forward.py",
+      "upstream_sha256": "518bc4d23eaebd9e0df4b252868aad0c471d3f7f396aac17d8dc9c2e6a7afb67"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/sm90_config_search.py",
+      "destination": "cute/sm90_config_search.py",
+      "upstream_sha256": "bd0ed6094e9fc48de587098f9b05bccbdd5f450b70d3500759a48b5d436cff9c"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/softmax.py",
+      "destination": "cute/softmax.py",
+      "upstream_sha256": "6ca26da796b2794cc9dba5fdc5907e02c40b59b4033470a64d374989ec7cff91"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/testing.py",
+      "destination": "cute/testing.py",
+      "upstream_sha256": "2292b589dc04d2a6822c65aab3a588faed8c7a307f54e1348500519ae130796f"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/tile_scheduler.py",
+      "destination": "cute/tile_scheduler.py",
+      "upstream_sha256": "a2f36e052733e7aa67a0f78fe1f9e4c414dcd0ddb554a22d471cafb5562ef489"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/topk_gather_kv.py",
+      "destination": "cute/topk_gather_kv.py",
+      "upstream_sha256": "58b10c0f75f789b80a163e976c4addd643665fc3b1498249da6e962fec673afb"
+    },
+    {
+      "source": "flash-attention-2c839c33742309ec41e620bf837495ec9926c56e/flash_attn/cute/utils.py",
+      "destination": "cute/utils.py",
+      "upstream_sha256": "0adb633cddf07a50c9a5b89280a2acd344cd4b709357e44ede0055b00d67e3d2"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/fused_moe.py",
+      "destination": "moe_gemm.py",
+      "upstream_sha256": "72811a4e543cc6f415f184cb951b61522643cddc4d6456f61a2f8c1a53b2cf79"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=512,N=64,device_name=NVIDIA_B200.json",
+      "destination": "configs/E=512,N=64,device_name=NVIDIA_B200.json",
+      "upstream_sha256": "7de985059b0da6d67a0e5437d9da41bb8ce1171686fa472ce0c14f4f18a9ba2d"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=16,N=2688,device_name=NVIDIA_A100-SXM4-80GB.json",
+      "destination": "configs/E=16,N=2688,device_name=NVIDIA_A100-SXM4-80GB.json",
+      "upstream_sha256": "1b83caa96c61d0c941860ed01ca8f49befbf7cfdcb97482ced525a7a0f8d2033"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=128,N=768,device_name=NVIDIA_B200.json",
+      "destination": "configs/E=128,N=768,device_name=NVIDIA_B200.json",
+      "upstream_sha256": "f90875f2463efae3ffbdec31e52b00aeca12629cd5af260ff7193552be69d53b"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=60,N=704,device_name=AMD_Instinct_MI300X.json",
+      "destination": "configs/E=60,N=704,device_name=AMD_Instinct_MI300X.json",
+      "upstream_sha256": "b557696c8535b1cb32971ea8cf72000e191cc2f65a36ac3efd055bedaea8557f"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=8,N=1792,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "destination": "configs/E=8,N=1792,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "upstream_sha256": "36cf58d766996c99c585c1b79f06faedb0eaaa2400a3db5d4c021ef0ad808f3e"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=128,N=384,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "destination": "configs/E=128,N=384,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "upstream_sha256": "e1ac4537d60a59fe64656b2e51d04819fcc8d750d3bd3171d967792012efdfa6"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=8,N=7168,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "destination": "configs/E=8,N=7168,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "upstream_sha256": "b667b4c9d5b32317400592e4e2d53c1bf5f674951818664d910ccd19c99cbd47"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=62,N=512,device_name=AMD_Instinct_MI300X.json",
+      "destination": "configs/E=62,N=512,device_name=AMD_Instinct_MI300X.json",
+      "upstream_sha256": "90abba1e992c03e34a552e020368af8e501012c865d4712e7d0d10b7e9536463"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=8,N=4096,device_name=NVIDIA_H200.json",
+      "destination": "configs/E=8,N=4096,device_name=NVIDIA_H200.json",
+      "upstream_sha256": "253f9930b840aaacd292a8af396e404d3291972c9a15092a4039da3d2e03135d"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=128,N=96,device_name=NVIDIA_H200.json",
+      "destination": "configs/E=128,N=96,device_name=NVIDIA_H200.json",
+      "upstream_sha256": "2a815f4e12a7de0bcb9b313834c2917bdfa0ed9035cc3309272df40012527f01"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=62,N=256,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "destination": "configs/E=62,N=256,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "upstream_sha256": "b0299f1426be23935fb7d6a9f9270bd0f5442991626e486d56c95b16cfcd2d0f"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=64,N=768,device_name=NVIDIA_H20.json",
+      "destination": "configs/E=64,N=768,device_name=NVIDIA_H20.json",
+      "upstream_sha256": "569b5b32972460a1ca60c2594be11a3bd1b47122fa9dc88bf57c9e1e264de058"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=128,N=192,device_name=NVIDIA_H20.json",
+      "destination": "configs/E=128,N=192,device_name=NVIDIA_H20.json",
+      "upstream_sha256": "46057c0b81752ced3d874d58b2017f7aa5fa18da01b42eee94f7c945451b83f8"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=8,N=3584,device_name=AMD_Instinct_MI300X.json",
+      "destination": "configs/E=8,N=3584,device_name=AMD_Instinct_MI300X.json",
+      "upstream_sha256": "c3f4762cbf24e6335550045caaf4a018bbcda108900b4321ef7722a92200cf9e"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=64,N=320,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "destination": "configs/E=64,N=320,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "upstream_sha256": "b64bb8fb24db22bd07e5336b9b53eaded2491584d7a87a5dcc90d2105ddb93d0"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=128,N=928,device_name=NVIDIA_L40S.json",
+      "destination": "configs/E=128,N=928,device_name=NVIDIA_L40S.json",
+      "upstream_sha256": "979f56c949e7ca698943292827312fbe4cf09612259b211e56dbc2151cd71913"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=512,N=256,device_name=NVIDIA_H200.json",
+      "destination": "configs/E=512,N=256,device_name=NVIDIA_H200.json",
+      "upstream_sha256": "85ef2b95e6134f8d24a6c8495b516c762c91d27454dfaec2ab2b52fbdf9464db"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=8,N=7168,device_name=AMD_Instinct_MI325X.json",
+      "destination": "configs/E=8,N=7168,device_name=AMD_Instinct_MI325X.json",
+      "upstream_sha256": "24f74ed1ace5878c94bdba42f5d107629453d7510b12be4b5c149be573f813fe"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=128,N=1856,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "destination": "configs/E=128,N=1856,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "upstream_sha256": "985c5d5b58e2446c685b4f4b8cbf2b447c608895d73e0b46082b639a3f375082"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=128,N=384,device_name=NVIDIA_H200.json",
+      "destination": "configs/E=128,N=384,device_name=NVIDIA_H200.json",
+      "upstream_sha256": "c6a865ef8f22b7c195d8a5d7d178b18ad13fcb09ec2a4b2a2bc0062fbb40813f"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=512,N=64,device_name=NVIDIA_A100-SXM4-80GB.json",
+      "destination": "configs/E=512,N=64,device_name=NVIDIA_A100-SXM4-80GB.json",
+      "upstream_sha256": "f4cdc894c6db22b0af7e14101ec634f0d00ea1a47ca5d779ec4df42583ca9519"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=16,N=3584,device_name=NVIDIA_A100-SXM4-80GB.json",
+      "destination": "configs/E=16,N=3584,device_name=NVIDIA_A100-SXM4-80GB.json",
+      "upstream_sha256": "4f0926f4354dc628e9a307ef8a827fe1c2b020894059dc8d58ef53037831007b"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=8,N=2048,device_name=AMD_Instinct_MI325X.json",
+      "destination": "configs/E=8,N=2048,device_name=AMD_Instinct_MI325X.json",
+      "upstream_sha256": "672385241e86520199b008e34f8dd72701bc3fe42b679c93be683340fed38506"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=8,N=2048,device_name=NVIDIA_H200.json",
+      "destination": "configs/E=8,N=2048,device_name=NVIDIA_H200.json",
+      "upstream_sha256": "4d748ea2abe2fb1f07d77c4faab07dab3d93de8a44180fb60f4bffe27e41106e"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=64,N=1536,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "destination": "configs/E=64,N=1536,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "upstream_sha256": "5a3cb35e3fa504a3c5bea359514a307dec743706129daa75d1c02fa3170535cf"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=512,N=128,device_name=NVIDIA_B200.json",
+      "destination": "configs/E=512,N=128,device_name=NVIDIA_B200.json",
+      "upstream_sha256": "3418fdca1854587a4d72fc1884fb412849f522dec16eb9d131137a262d886b3a"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=8,N=4096,device_name=AMD_Instinct_MI325X.json",
+      "destination": "configs/E=8,N=4096,device_name=AMD_Instinct_MI325X.json",
+      "upstream_sha256": "16755c7f37f981791046dd1782c47321055b0cf6940cec16257ffda8e972bd17"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=512,N=1344,device_name=NVIDIA_B200.json",
+      "destination": "configs/E=512,N=1344,device_name=NVIDIA_B200.json",
+      "upstream_sha256": "7a21bbb6db7136964e93233e527a248bdde5f6b729e0d4614128b70a0daccb1a"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=8,N=4096,device_name=NVIDIA_A100-SXM4-80GB.json",
+      "destination": "configs/E=8,N=4096,device_name=NVIDIA_A100-SXM4-80GB.json",
+      "upstream_sha256": "0f162ef2b7a064e485bbcba014603f41bc162b883cc70414645f5afe7358e02b"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=128,N=192,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "destination": "configs/E=128,N=192,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "upstream_sha256": "237938d7a1db5d4feb61bf2c703f20008e1fb81944947974e8f337e3b41ad75c"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=64,N=640,device_name=NVIDIA_H200.json",
+      "destination": "configs/E=64,N=640,device_name=NVIDIA_H200.json",
+      "upstream_sha256": "279f6b9aa17c3505a4aa66b2fff6a1037b7723068f5cdbb901534b9d36837d80"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=128,N=1856,device_name=NVIDIA_L40S.json",
+      "destination": "configs/E=128,N=1856,device_name=NVIDIA_L40S.json",
+      "upstream_sha256": "fb072285342857cd849fb342f5e53640d966e3a7e38dd016f72c1a87004bceeb"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=128,N=768,device_name=NVIDIA_H20.json",
+      "destination": "configs/E=128,N=768,device_name=NVIDIA_H20.json",
+      "upstream_sha256": "d7436dbb66950f9bc62e89f1fa35b4a8dc3eb606567599b3306c7bbad0d57a78"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=8,N=3584,device_name=NVIDIA_H200.json",
+      "destination": "configs/E=8,N=3584,device_name=NVIDIA_H200.json",
+      "upstream_sha256": "69dd599244b22c9c1119be0a7f6e2a839856fc33e6b74057aca47ce68022577e"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=128,N=512,device_name=NVIDIA_B200.json",
+      "destination": "configs/E=128,N=512,device_name=NVIDIA_B200.json",
+      "upstream_sha256": "64aef9d9e923d6892bd1f1bc8c845594ad189ba2c3144278b09f0be0d2de7878"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=60,N=1408,device_name=AMD_Instinct_MI300X.json",
+      "destination": "configs/E=60,N=1408,device_name=AMD_Instinct_MI300X.json",
+      "upstream_sha256": "e145dbb123479ab4969c3f3949d44c2e9e1c14646e7e777326307a86840f7255"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=512,N=512,device_name=NVIDIA_B200.json",
+      "destination": "configs/E=512,N=512,device_name=NVIDIA_B200.json",
+      "upstream_sha256": "2dc303d8975d897e3cf1d7510ac87471769fde6cb4553d08c1ea900f24d66707"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=72,N=768,device_name=AMD_Instinct_MI300X.json",
+      "destination": "configs/E=72,N=768,device_name=AMD_Instinct_MI300X.json",
+      "upstream_sha256": "ebc488ed7564c474b493d0294d6d7e9d29c8a8eb5b7bcae66ad35ec56445caa5"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=128,N=1856,device_name=NVIDIA_B200.json",
+      "destination": "configs/E=128,N=1856,device_name=NVIDIA_B200.json",
+      "upstream_sha256": "6fd8940ae22b04264c0673269a023d966fb4e51a08558b3fb93d8fad74510677"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=8,N=8192,device_name=AMD_Instinct_MI300X.json",
+      "destination": "configs/E=8,N=8192,device_name=AMD_Instinct_MI300X.json",
+      "upstream_sha256": "b8e955cd374997fe15ad12b8c26c486fc24a7ef7856518cef6cca3c3fa0478bd"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=128,N=2880,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "destination": "configs/E=128,N=2880,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "upstream_sha256": "3ebc64fae616e16e4c23cb1e9018419de00eb2fa14cb51e81c94e1d510c4bad3"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=128,N=928,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "destination": "configs/E=128,N=928,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "upstream_sha256": "8a99478cf8f7eba9cd06ee3864794245eeda31a5764f842d85720d9a45a2db5f"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=512,N=256,device_name=NVIDIA_H20-3e.json",
+      "destination": "configs/E=512,N=256,device_name=NVIDIA_H20-3e.json",
+      "upstream_sha256": "ab9000007f2021a53efb799785217555d153147340cb973e814bd8726f6a8448"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=8,N=16384,device_name=AMD_Instinct_MI300X.json",
+      "destination": "configs/E=8,N=16384,device_name=AMD_Instinct_MI300X.json",
+      "upstream_sha256": "fdf71d9265af74ca87887f1900691efb35e11fba953d0c790a62842d6e614420"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=128,N=192,device_name=NVIDIA_H200.json",
+      "destination": "configs/E=128,N=192,device_name=NVIDIA_H200.json",
+      "upstream_sha256": "9ec344b83364b34b552df41f226ef1c45c047a9b537d07286bd7c9cb4352f314"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=64,N=320,device_name=NVIDIA_H200.json",
+      "destination": "configs/E=64,N=320,device_name=NVIDIA_H200.json",
+      "upstream_sha256": "6ccf60f97a62aec4e13b7436c7c0a14b1dcf3ed1ee1d15cbbd53274d6b7c8cb2"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=1,N=7168,device_name=NVIDIA_A100-SXM4-80GB.json",
+      "destination": "configs/E=1,N=7168,device_name=NVIDIA_A100-SXM4-80GB.json",
+      "upstream_sha256": "ed61cfcffd1fc5e23711dd03f55229655a1e37d46d25554046fa6d7dc990bb8d"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=1,N=1792,device_name=NVIDIA_A100-SXM4-80GB.json",
+      "destination": "configs/E=1,N=1792,device_name=NVIDIA_A100-SXM4-80GB.json",
+      "upstream_sha256": "b38ee56fc54b9f2c4c81696a70847805d3c1b232962f8a255c5e3db99bf28334"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=1,N=14336,device_name=NVIDIA_A100-SXM4-80GB.json",
+      "destination": "configs/E=1,N=14336,device_name=NVIDIA_A100-SXM4-80GB.json",
+      "upstream_sha256": "847e6b44df56b72bf7e5acf1333c943075ad88a80e1debf9b4d8c81bc8fa76c1"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=64,N=640,device_name=NVIDIA_A800-SXM4-80GB.json",
+      "destination": "configs/E=64,N=640,device_name=NVIDIA_A800-SXM4-80GB.json",
+      "upstream_sha256": "f81ea06401182f030964e9e93bcd694f1aacf9854ab3fd78e0d9fd0522da321d"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=16,N=2688,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "destination": "configs/E=16,N=2688,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "upstream_sha256": "6ca5fd02f73137a93e8b745498749c859677ae3a184586f8881aa1088e0bdcc6"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=8,N=1792,device_name=NVIDIA_A100-SXM4-40GB.json",
+      "destination": "configs/E=8,N=1792,device_name=NVIDIA_A100-SXM4-40GB.json",
+      "upstream_sha256": "01f7c3734ff9d4c2fc1e2037ef9ef36c3d744d925d52c50321822a3b8834c94c"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=8,N=1792,device_name=NVIDIA_A100-SXM4-80GB.json",
+      "destination": "configs/E=8,N=1792,device_name=NVIDIA_A100-SXM4-80GB.json",
+      "upstream_sha256": "204601363b7d1c69f3a0e5525af2f40348d4aaaf76e900f4fc1bd5611e110356"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=16,N=1024,device_name=NVIDIA_H100.json",
+      "destination": "configs/E=16,N=1024,device_name=NVIDIA_H100.json",
+      "upstream_sha256": "06ae7b30f417b9289bd3abba3b0884992cceaf75ef3d8a03ea88580c96819c82"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=512,N=128,device_name=NVIDIA_H20-3e.json",
+      "destination": "configs/E=512,N=128,device_name=NVIDIA_H20-3e.json",
+      "upstream_sha256": "0da0a1028efd45a7d71a3a4039e3b5090f436b33e4ed56b36f96c01320ce6120"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=8,N=7168,device_name=NVIDIA_A100-SXM4-80GB.json",
+      "destination": "configs/E=8,N=7168,device_name=NVIDIA_A100-SXM4-80GB.json",
+      "upstream_sha256": "0402675d36687b0c02b7324b50f274a18b802efeb8d0cbc3b8bb1e19cb1869ac"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=128,N=192,device_name=NVIDIA_A100-SXM4-80GB.json",
+      "destination": "configs/E=128,N=192,device_name=NVIDIA_A100-SXM4-80GB.json",
+      "upstream_sha256": "e50a85963c3003c39a3e51675f2d73a20979a22e9a1343aa377f719362140bae"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=64,N=1280,device_name=NVIDIA_A800-SXM4-80GB.json",
+      "destination": "configs/E=64,N=1280,device_name=NVIDIA_A800-SXM4-80GB.json",
+      "upstream_sha256": "58fbbcd3e396c84241cb585d9dec0b3751f59de156f14549aeac9e0c67a05dcd"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=512,N=512,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "destination": "configs/E=512,N=512,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "upstream_sha256": "4b232a365db02f5d5c6e3f79c75e18ca7078630c9095a39fd723cf20ad237094"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=8,N=14336,device_name=AMD_Instinct_MI300X.json",
+      "destination": "configs/E=8,N=14336,device_name=AMD_Instinct_MI300X.json",
+      "upstream_sha256": "16c22fe5ba92a6459bc4ad9d05f83537ab57f5ea59e796618242420fb8443656"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=8,N=1792,device_name=NVIDIA_H200.json",
+      "destination": "configs/E=8,N=1792,device_name=NVIDIA_H200.json",
+      "upstream_sha256": "f2aea89792500568fac957f314e9fb1b3e4c4974da5bd8dabcbeea4266153b08"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=16,N=1024,device_name=NVIDIA_B200.json",
+      "destination": "configs/E=16,N=1024,device_name=NVIDIA_B200.json",
+      "upstream_sha256": "85ef3bddaa0ecbb29f160fae3284c557820fed89340e4ee6393b8b093ab06597"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=8,N=4096,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "destination": "configs/E=8,N=4096,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "upstream_sha256": "ab02b2f2868cb1ddd0ad78106ccff1f7171f6221cafcebb5084c033cbe466e0a"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=62,N=256,device_name=AMD_Instinct_MI300X.json",
+      "destination": "configs/E=62,N=256,device_name=AMD_Instinct_MI300X.json",
+      "upstream_sha256": "d9e15d0074d4fd84d355a77f38471865c49bb66e60b651e0e0287153fbf56bf9"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=8,N=1792,device_name=AMD_Instinct_MI325X.json",
+      "destination": "configs/E=8,N=1792,device_name=AMD_Instinct_MI325X.json",
+      "upstream_sha256": "d7cbfa62bb8a6d0f79a573d5f28715e1574cd73370dda645a77581c9e5243523"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=160,N=192,device_name=NVIDIA_A800-SXM4-80GB.json",
+      "destination": "configs/E=160,N=192,device_name=NVIDIA_A800-SXM4-80GB.json",
+      "upstream_sha256": "4ed0e7806ee58eb53946d599ee0fb1c5d053dee12e6b088a84ff04c0fafded73"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=160,N=192,device_name=NVIDIA_H20-3e.json",
+      "destination": "configs/E=160,N=192,device_name=NVIDIA_H20-3e.json",
+      "upstream_sha256": "bb4f5719475442a4836acad480e41ebbbc9da797ede544b5a12334893f814f73"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=64,N=3072,device_name=NVIDIA_H20.json",
+      "destination": "configs/E=64,N=3072,device_name=NVIDIA_H20.json",
+      "upstream_sha256": "83733dc343688b70f2401edf72bde350ceb6fcb299bd3c1b6361adcc319df7fa"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=1,N=3072,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "destination": "configs/E=1,N=3072,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "upstream_sha256": "ca5da545ca0600ab3539054a476257d82d15929c148825c673f053be1ea1fabf"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=160,N=192,device_name=AMD_Instinct_MI300X.json",
+      "destination": "configs/E=160,N=192,device_name=AMD_Instinct_MI300X.json",
+      "upstream_sha256": "0052deb9bfddc191dce2a12dbe4416d3799f1bd7dd81ebaa4d388fe2a0bc8b53"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=256,N=64,device_name=NVIDIA_A800-SXM4-80GB.json",
+      "destination": "configs/E=256,N=64,device_name=NVIDIA_A800-SXM4-80GB.json",
+      "upstream_sha256": "ad53915f136cc72e1698ee52251f1277893bbe8ccaaa161fe74c1934231e433b"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=72,N=384,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "destination": "configs/E=72,N=384,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "upstream_sha256": "e7a880e3134e4ae6865a0cf6420f8d8913a1a5da0132da383555278ac52cc83f"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=60,N=352,device_name=AMD_Instinct_MI300X.json",
+      "destination": "configs/E=60,N=352,device_name=AMD_Instinct_MI300X.json",
+      "upstream_sha256": "807c6d98efeebe9b9e2d596c2605c1544dffa52d52f44791c4d9871bf650b338"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=64,N=1280,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "destination": "configs/E=64,N=1280,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "upstream_sha256": "a334b6102c64f83b1de18f43802186c03c099427f94f6d0035fe609d350cb927"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=8,N=3584,device_name=NVIDIA_L40S.json",
+      "destination": "configs/E=8,N=3584,device_name=NVIDIA_L40S.json",
+      "upstream_sha256": "a97e7fc84ac11300d1ce1bf616fc6b4b7a4431af339f4187ccba794d4317f748"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=512,N=256,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "destination": "configs/E=512,N=256,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "upstream_sha256": "a672b51d0d81e440aa081a2545ae586f8a800a5568276a627419cfcb71812de6"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=512,N=512,device_name=NVIDIA_H200.json",
+      "destination": "configs/E=512,N=512,device_name=NVIDIA_H200.json",
+      "upstream_sha256": "c51fefe30cbcfda7bd7c6cae4e7856634776f4dc02f4284f2af7422b9fcf4b66"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=128,N=1024,device_name=AMD_Instinct_MI300X.json",
+      "destination": "configs/E=128,N=1024,device_name=AMD_Instinct_MI300X.json",
+      "upstream_sha256": "0f6767f6f5f23781422ac6427fb55880058b79d0b1f17a4f8db91055502fc000"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=8,N=3584,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "destination": "configs/E=8,N=3584,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "upstream_sha256": "fb99e42c8ba78c6d6084fa1412db76017110c3da068a294fecadd4bd0bfd0aa1"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=512,N=128,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "destination": "configs/E=512,N=128,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "upstream_sha256": "ec53383036af35539c10e16576c66ce47f84e4ee842001c363d9fe6a22d8fca8"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=8,N=7168,device_name=AMD_Instinct_MI300X.json",
+      "destination": "configs/E=8,N=7168,device_name=AMD_Instinct_MI300X.json",
+      "upstream_sha256": "12d568ac66389214c4ba29a5a99bb400094fcfce0f1f76640d9995a712ed810c"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=32,N=1792,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "destination": "configs/E=32,N=1792,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "upstream_sha256": "589f044458ab978e83af54e1f354b12b7e2592064db087071ba846cad3034645"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=8,N=2048,device_name=NVIDIA_A100-SXM4-80GB.json",
+      "destination": "configs/E=8,N=2048,device_name=NVIDIA_A100-SXM4-80GB.json",
+      "upstream_sha256": "1cec5698223689f1e659cd28af6cbc9c47a7f3a8c378b0e8bf5fadb8ccee871a"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=64,N=384,device_name=NVIDIA_H20.json",
+      "destination": "configs/E=64,N=384,device_name=NVIDIA_H20.json",
+      "upstream_sha256": "6fa96a5653edebc199d70958bb752d0bace45e79e72b0878b4a1a5b5736f4d56"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=8,N=3584,device_name=AMD_Instinct_MI325X.json",
+      "destination": "configs/E=8,N=3584,device_name=AMD_Instinct_MI325X.json",
+      "upstream_sha256": "57dfd5914cf1b65d1e0ca9479b1dd08be77973c3d4a987bd11c5f40f9d3c2d79"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=16,N=1344,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "destination": "configs/E=16,N=1344,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "upstream_sha256": "238779eae0fb13524c5c3f51031ab715e6dd3eab83b2734491568863d0ad9bdc"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=16,N=1024,device_name=NVIDIA_H200.json",
+      "destination": "configs/E=16,N=1024,device_name=NVIDIA_H200.json",
+      "upstream_sha256": "87adf31baf7c2a7cde0c72f6d0c7f127770a8913a705dec6559f9ae9681b702c"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=62,N=128,device_name=AMD_Instinct_MI300X.json",
+      "destination": "configs/E=62,N=128,device_name=AMD_Instinct_MI300X.json",
+      "upstream_sha256": "fcc9ffdd9b8a1aa3675ed714519034aebdbd73f95ca7e6f7daec39ee86078153"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=8,N=2048,device_name=AMD_Instinct_MI300X.json",
+      "destination": "configs/E=8,N=2048,device_name=AMD_Instinct_MI300X.json",
+      "upstream_sha256": "70559ec8d26d11bb3e05fa21833725c68d6b718194f3ade85740732724384f4c"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=16,N=1024,device_name=AMD_Instinct_MI300X.json",
+      "destination": "configs/E=16,N=1024,device_name=AMD_Instinct_MI300X.json",
+      "upstream_sha256": "7f788cdf19bc846522ac9e2294020f3ba3def5bb38b26dea69128cb3037d48a1"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=512,N=512,device_name=NVIDIA_H20-3e.json",
+      "destination": "configs/E=512,N=512,device_name=NVIDIA_H20-3e.json",
+      "upstream_sha256": "9e9afce7992f5a51c82f38b9334b23623a1f3c03bd6dfe96085da8659e2ededa"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=128,N=384,device_name=NVIDIA_H20.json",
+      "destination": "configs/E=128,N=384,device_name=NVIDIA_H20.json",
+      "upstream_sha256": "bd2d834480cea96ca206f6c6e87ef8ea8c277e40f517c023d98674113f71965f"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=8,N=7168,device_name=NVIDIA_H200.json",
+      "destination": "configs/E=8,N=7168,device_name=NVIDIA_H200.json",
+      "upstream_sha256": "1acb50a2c3cf1d49ff2360d5dde306b67df15cec3a925d616fc2f412f46c6c45"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=8,N=14336,device_name=NVIDIA_H200.json",
+      "destination": "configs/E=8,N=14336,device_name=NVIDIA_H200.json",
+      "upstream_sha256": "082fe3b0c857ceb6277bb7883aba036b47c204a3677df89a556d9329de0ff9e9"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=512,N=64,device_name=NVIDIA_H20-3e.json",
+      "destination": "configs/E=512,N=64,device_name=NVIDIA_H20-3e.json",
+      "upstream_sha256": "8959ebc8e0b8dd18abab7f0fc0fc73207ad6bdfea9038c0766d7f51ce806b652"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=128,N=1024,device_name=NVIDIA_H200.json",
+      "destination": "configs/E=128,N=1024,device_name=NVIDIA_H200.json",
+      "upstream_sha256": "da3f84f3c74d42086726e22b08bc149fb41f508ebab627a80ade932188ccbc74"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=160,N=320,device_name=NVIDIA_H20-3e.json",
+      "destination": "configs/E=160,N=320,device_name=NVIDIA_H20-3e.json",
+      "upstream_sha256": "2413bf97c85fc426e243f3efa2a4b75f1aa5cfd8b93cfed015f5e318a2dfedbc"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=16,N=1792,device_name=NVIDIA_A100-SXM4-80GB.json",
+      "destination": "configs/E=16,N=1792,device_name=NVIDIA_A100-SXM4-80GB.json",
+      "upstream_sha256": "2665e1527857e983b2f11b264f4cc52c6c8d0a94413d5daad836fd63d72d65e1"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=16,N=7168,device_name=NVIDIA_A100-SXM4-80GB.json",
+      "destination": "configs/E=16,N=7168,device_name=NVIDIA_A100-SXM4-80GB.json",
+      "upstream_sha256": "8b24aa69ed3323f3d104ba95faf7d20b00d2e09c5c97942359ad8d9e19dd2f45"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=64,N=640,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "destination": "configs/E=64,N=640,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "upstream_sha256": "59e818b07977f505651eeff8119252ae00382d0e5f631495356161a0be96d917"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=64,N=1408,device_name=NVIDIA_B200.json",
+      "destination": "configs/E=64,N=1408,device_name=NVIDIA_B200.json",
+      "upstream_sha256": "e0ca98894c553cb82489a4e5d6f679439c02c2c2d8369ecedbe91b3926262a32"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=8,N=4096,device_name=AMD_Instinct_MI300X.json",
+      "destination": "configs/E=8,N=4096,device_name=AMD_Instinct_MI300X.json",
+      "upstream_sha256": "2fc540d6c7f2807a322c9f986dfb3c0cfe5cd1858598c930c474fcc89f4f1053"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=128,N=768,device_name=AMD_Instinct_MI308X.json",
+      "destination": "configs/E=128,N=768,device_name=AMD_Instinct_MI308X.json",
+      "upstream_sha256": "483c4602946bd0d97c4e1cfef7d637bca133d80c3ad23b821a8ef3490ae230a8"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=8,N=16384,device_name=AMD_Instinct_MI325X.json",
+      "destination": "configs/E=8,N=16384,device_name=AMD_Instinct_MI325X.json",
+      "upstream_sha256": "24a616db57340b34747e0139667629e82d6c63fb554659bc2ff9606a4e55e731"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=1,N=3584,device_name=NVIDIA_A100-SXM4-80GB.json",
+      "destination": "configs/E=1,N=3584,device_name=NVIDIA_A100-SXM4-80GB.json",
+      "upstream_sha256": "6ab3eab2d64ccd98f3f013696376a5293e2f182272523e48da111e2b4d9aabdf"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=8,N=2048,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "destination": "configs/E=8,N=2048,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "upstream_sha256": "ff9c1e2c18a74020f3c95ef98472884fde58d1c7bde0a59fb76ff9042e8491b4"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=8,N=8192,device_name=AMD_Instinct_MI325X.json",
+      "destination": "configs/E=8,N=8192,device_name=AMD_Instinct_MI325X.json",
+      "upstream_sha256": "502fa24e087cfdd5125d16981ce2210c7df528e88999c7ea33f06ffd405fde4b"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=128,N=192,device_name=NVIDIA_H20-3e.json",
+      "destination": "configs/E=128,N=192,device_name=NVIDIA_H20-3e.json",
+      "upstream_sha256": "0a80b7a4c2b1d2f92323d4faaea44b4c8c1b0ec9319634e3df57c21c8df8079c"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=8,N=3584,device_name=NVIDIA_A100-SXM4-80GB.json",
+      "destination": "configs/E=8,N=3584,device_name=NVIDIA_A100-SXM4-80GB.json",
+      "upstream_sha256": "2ba046acac3fa074c0b478ec66575c8e9f8150cd5d21e70a5ebad19fd3a9446b"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=16,N=14336,device_name=NVIDIA_A100-SXM4-80GB.json",
+      "destination": "configs/E=16,N=14336,device_name=NVIDIA_A100-SXM4-80GB.json",
+      "upstream_sha256": "b54a6d96eadebb9420c8011e76dc79b26ec216e757004e9f2177a939bf607dab"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=512,N=128,device_name=NVIDIA_A100-SXM4-80GB.json",
+      "destination": "configs/E=512,N=128,device_name=NVIDIA_A100-SXM4-80GB.json",
+      "upstream_sha256": "a998125fddbbcd686f75073b2a348166df96935d4b4f01482bc52d114f401493"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=60,N=176,device_name=AMD_Instinct_MI300X.json",
+      "destination": "configs/E=60,N=176,device_name=AMD_Instinct_MI300X.json",
+      "upstream_sha256": "a7a4ca529f8a0de2c1f44f4ba93851d5eec9dbea204973c9a23212747802c5a6"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=128,N=768,device_name=NVIDIA_H200.json",
+      "destination": "configs/E=128,N=768,device_name=NVIDIA_H200.json",
+      "upstream_sha256": "26b68cf8dbdb83957f4c991297a50f15864dd731c7a086ebda901c92c7a7a136"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=512,N=64,device_name=NVIDIA_H200.json",
+      "destination": "configs/E=512,N=64,device_name=NVIDIA_H200.json",
+      "upstream_sha256": "2b51e422ca308126efc2d029a5964fb9d6082278bfc1aa12c4390045308442ca"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=8,N=3584,device_name=NVIDIA_A100-SXM4-40GB.json",
+      "destination": "configs/E=8,N=3584,device_name=NVIDIA_A100-SXM4-40GB.json",
+      "upstream_sha256": "46ee3ad1982750fe14f0eb097f017c9fe008fa07dca25351dffab3a311ba0ed6"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=64,N=2560,device_name=NVIDIA_H200.json",
+      "destination": "configs/E=64,N=2560,device_name=NVIDIA_H200.json",
+      "upstream_sha256": "097887946a5e6b97041a6162dbc25e737e2ec446484c5d9795d545709b5e657d"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=64,N=1280,device_name=NVIDIA_A100-SXM4-80GB.json",
+      "destination": "configs/E=64,N=1280,device_name=NVIDIA_A100-SXM4-80GB.json",
+      "upstream_sha256": "e903cb859bab22a70c55dcb7c340ddee02d588ac6cc89441cfea9df1a8298ba4"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=16,N=2048,device_name=NVIDIA_H200.json",
+      "destination": "configs/E=16,N=2048,device_name=NVIDIA_H200.json",
+      "upstream_sha256": "2dcf16aaea388665c6914abf1c2c64c56d5fcc39ef13a8c765211cdbcfa2ee50"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=128,N=384,device_name=NVIDIA_H20-3e.json",
+      "destination": "configs/E=128,N=384,device_name=NVIDIA_H20-3e.json",
+      "upstream_sha256": "8248a6c72dabefc31c7242b1c78538477c5a85323528c1f6a4c39d50539476ef"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=128,N=96,device_name=NVIDIA_H20.json",
+      "destination": "configs/E=128,N=96,device_name=NVIDIA_H20.json",
+      "upstream_sha256": "26d7074653f3f3140402a27d11623ade862f7668d0146e954c7aadb7ce553920"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=512,N=256,device_name=NVIDIA_B200.json",
+      "destination": "configs/E=512,N=256,device_name=NVIDIA_B200.json",
+      "upstream_sha256": "d1abccce07e81d1cd42dbc4877323549509651204fd7490abf1cbedccbffcbf3"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=72,N=384,device_name=AMD_Instinct_MI300X.json",
+      "destination": "configs/E=72,N=384,device_name=AMD_Instinct_MI300X.json",
+      "upstream_sha256": "5cc302b30933750c557ce0433342971bfaf203d2675f88452a117642ca627ec6"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=72,N=768,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "destination": "configs/E=72,N=768,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "upstream_sha256": "20274e9d9a0cf306a239579560fd7c4223c349bb60f50eb23be3ab3b4fb6c6d2"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=256,N=512,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "destination": "configs/E=256,N=512,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "upstream_sha256": "97ccbad3a1933385e777d0817618edecbb80ff528b412e353c89c728d7d90193"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=64,N=896,device_name=NVIDIA_H20.json",
+      "destination": "configs/E=64,N=896,device_name=NVIDIA_H20.json",
+      "upstream_sha256": "18d6e9e16e0c0681c7378fb4b17268bd8d255faac77d9cc6c8a89caee9aea464"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=64,N=640,device_name=NVIDIA_A100-SXM4-80GB.json",
+      "destination": "configs/E=64,N=640,device_name=NVIDIA_A100-SXM4-80GB.json",
+      "upstream_sha256": "a3138a143ae09b0d589a0c53b516b5ba87b7a74f729532eb923fe3393a8d8754"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=32,N=1408,device_name=NVIDIA_B200.json",
+      "destination": "configs/E=32,N=1408,device_name=NVIDIA_B200.json",
+      "upstream_sha256": "3e8570486baac85ff40eb453ae081d9a57e1527d9d9926dcfa93f83e33041789"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=8,N=14336,device_name=AMD_Instinct_MI325X.json",
+      "destination": "configs/E=8,N=14336,device_name=AMD_Instinct_MI325X.json",
+      "upstream_sha256": "7e73bebf862a073d2f528d14b4e4d30f49fb5431bf8af733790d6d47a426f5fd"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=16,N=1792,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "destination": "configs/E=16,N=1792,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "upstream_sha256": "bef7f4be67081cca9cb50fd7f23d4baa59a4b889abe3aac35029e5f9aa5beabd"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=128,N=512,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "destination": "configs/E=128,N=512,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "upstream_sha256": "16c59b57843a03302d81e815b843410f3d9971226ca8d8b050855f41ba4fee14"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=62,N=512,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "destination": "configs/E=62,N=512,device_name=NVIDIA_H100_80GB_HBM3.json",
+      "upstream_sha256": "2a66003ce833fb6aa7d9ce6563cbbd5d1cbc8bc1cd926391e66e394c8bb0b78b"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=128,N=512,device_name=NVIDIA_H200.json",
+      "destination": "configs/E=128,N=512,device_name=NVIDIA_H200.json",
+      "upstream_sha256": "4ba21c280372c03284ef84506b4fecbfda9fdbe514c3f3ae3f6ec77e04c25764"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=72,N=192,device_name=AMD_Instinct_MI300X.json",
+      "destination": "configs/E=72,N=192,device_name=AMD_Instinct_MI300X.json",
+      "upstream_sha256": "af7e9d5147d1e6bbfbc92fc8f16e7acfdf5501af0b21f68d450928ffded1d787"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=64,N=1280,device_name=NVIDIA_H200.json",
+      "destination": "configs/E=64,N=1280,device_name=NVIDIA_H200.json",
+      "upstream_sha256": "c35f11dde1c1e285217db7025e31f20efa744620d2782adf33e5451128a6da14"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=16,N=1344,device_name=NVIDIA_A100-SXM4-80GB.json",
+      "destination": "configs/E=16,N=1344,device_name=NVIDIA_A100-SXM4-80GB.json",
+      "upstream_sha256": "b6b5f6f9ce0dea14d30facc5362e80d9b4f71648712a390cdab3e5fa8d4af6cb"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=256,N=1024,device_name=AMD_Instinct_MI325X,block_shape=[128,128].json",
+      "destination": "configs/E=256,N=1024,device_name=AMD_Instinct_MI325X,block_shape=[128,128].json",
+      "upstream_sha256": "7d3edfc23ba2b781db6f2444615dc4089f519bcf055be579e1edbb9c6f6703f4"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=512,N=672,device_name=NVIDIA_B200.json",
+      "destination": "configs/E=512,N=672,device_name=NVIDIA_B200.json",
+      "upstream_sha256": "aa081ddc00fc7f6312df2a263374d53218957132532ebf9268f9e09fa6b9e47c"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=8,N=1792,device_name=AMD_Instinct_MI300X.json",
+      "destination": "configs/E=8,N=1792,device_name=AMD_Instinct_MI300X.json",
+      "upstream_sha256": "ff579513ba24f77e4bd95e37fb70f76d53564956a856289ad7db21d15ad79973"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=512,N=128,device_name=NVIDIA_H200.json",
+      "destination": "configs/E=512,N=128,device_name=NVIDIA_H200.json",
+      "upstream_sha256": "041dea3cc4446800b35879a1bdc1134072c36065fb1974caaf5139726dbdb82d"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/configs/E=16,N=1344,device_name=NVIDIA_A100-SXM4-40GB.json",
+      "destination": "configs/E=16,N=1344,device_name=NVIDIA_A100-SXM4-40GB.json",
+      "upstream_sha256": "a4208a91d533cee055b658f293b0042006de0dfd760d48a279768e0d95f39b91"
+    },
+    {
+      "source": "vllm-0.25.1/vllm/distributed/device_communicators/symm_mem.py",
+      "destination": "symm_mem.py",
+      "upstream_sha256": "56a5dfe2c00867e51725199e9c72ab06c608eaa2d178c4495e83281bab9868cb",
+      "adapted": true
+    },
+    {
+      "source": "vllm-0.25.1/vllm/distributed/device_communicators/all_reduce_utils.py",
+      "destination": "collective_sizes.py",
+      "upstream_sha256": "3fc9b469a461755c6a266a0176b6da7abf83dd91e5631ab0254d9d79917b0c0c",
+      "adapted": true
+    },
+    {
+      "source": "vllm-0.25.1/vllm/distributed/device_communicators/custom_all_reduce.py",
+      "destination": "collectives.py",
+      "upstream_sha256": "3ed3ff9bbcaf361071ce6af77b879f5d269ba816366f56619cb3c21d486c52e7",
+      "adapted": true
+    },
+    {
+      "source": "vllm-0.25.1/csrc/libtorch_stable/torch_bindings.cpp",
+      "destination": "csrc/bindings.cpp",
+      "upstream_sha256": "b9be706ab2203bfcadce075f30714711ef3c10da01d80846b83c70db8c6b7c9f",
+      "adapted": true
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/fused_moe.py",
+      "destination": "moe.py",
+      "upstream_sha256": "72811a4e543cc6f415f184cb951b61522643cddc4d6456f61a2f8c1a53b2cf79",
+      "adapted": true
+    },
+    {
+      "source": "vllm-0.25.1/vllm/distributed/device_communicators/pynccl.py",
+      "destination": "collectives.py",
+      "upstream_sha256": "28596817ee9fb842026624a8a6c32b0637630b6b908ddb2a79ecccbeac531e35",
+      "adapted": true
+    },
+    {
+      "source": "vllm-0.25.1/vllm/distributed/device_communicators/pynccl_wrapper.py",
+      "destination": "collectives.py",
+      "upstream_sha256": "5379921210d91f743bff98e57cb441a11eb6422f17dd687606c7326d64659541",
+      "adapted": true
+    },
+    {
+      "source": "vllm-0.25.1/vllm/distributed/device_communicators/cuda_communicator.py",
+      "destination": "collectives.py",
+      "upstream_sha256": "d64357f3459d5ae69f27c7f999af44e498aa3332d6f1c2ed79dce284326ed201",
+      "adapted": true
+    },
+    {
+      "source": "vllm-0.25.1/vllm/model_executor/layers/fused_moe/router/grouped_topk_router.py",
+      "destination": "moe.py",
+      "upstream_sha256": "6a541bfdcf9e9a09fc888ea3f4a2e9689181e889e3a3ac9f49716d8d59cca142",
+      "adapted": true
+    }
+  ],
+  "modifications": [
+    "Local package/C++/operator namespaces; import formatting.",
+    "Minimal CUDA binding registrations and local extension loader.",
+    "BF16 MoE launcher only; retained native configuration selection.",
+    "Explicit process groups; CUDA native collective profile only; local NCCL wrapper."
+  ]
+}
