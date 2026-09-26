@@ -10,24 +10,9 @@ import torch
 import triton
 import triton.language as tl
 
-from megatron.core.ssm.ops.determinism import autotune_configs
 
-
-# Two block-dim regimes:
-#   1. vLLM-style: small BLOCK_T, large BLOCK_C, pipelined. Many small programs maximize
-#      GPU occupancy, BLOCK_C=256 fully fills HBM transactions, sequence-pure programs
-#      avoid in-block boundary branching. Usually wins at moderate-to-large conv_dim.
-#   2. Large-block fallback: bigger tiles, fewer programs. Can win for small conv_dim
-#      where vLLM's regime over-parallelizes, or when launch overhead dominates.
-@triton.autotune(
-    configs=autotune_configs(
-        [
-            triton.Config({"BLOCK_T": 8, "BLOCK_C": 256}, num_warps=4, num_stages=2),
-            triton.Config({"BLOCK_T": 128, "BLOCK_C": 128}, num_warps=4),
-        ]
-    ),
-    key=["conv_dim"],
-)
+# The reference vLLM prefill convolution uses fixed 8-token / 256-channel
+# tiles and two pipeline stages, rather than an autotuner.
 @triton.jit
 def _causal_conv1d_varlen_kernel(
     x_ptr,
@@ -106,7 +91,10 @@ def _causal_conv1d_varlen_kernel(
         else:
             tap = x_val
 
-        acc += tap * w_j[None, :]
+        # Match the pinned vLLM prefill kernel: round each product to the
+        # input dtype before adding it to the FP32 accumulator. Keeping the
+        # product in FP32 gives different BF16 outputs on real model inputs.
+        acc += (tap * w_j[None, :]).to(x_ptr.dtype.element_ty).to(tl.float32)
 
     # SiLU activation: x * sigmoid(x)
     sigmoid_acc = 1.0 / (1.0 + tl.exp(-acc))
@@ -207,6 +195,9 @@ def causal_conv1d_varlen_fn(
         is_stride_dim,
         WIDTH=d_conv,
         HAS_INITIAL_STATES=has_initial_states,
+        BLOCK_T=8,
+        BLOCK_C=256,
+        num_stages=2,
     )
 
     return out
