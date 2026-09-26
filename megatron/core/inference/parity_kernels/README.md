@@ -12,7 +12,10 @@ as `LICENSE.vllm` and `LICENSE.flash-attention`. Copyright notices are retained.
 
 - `moe.py` and `moe_gemm.py`: sigmoid/bias routing, BF16 Triton expert GEMMs,
   separate ReLU and square, and ordered expert summation. The reference's
-  device-specific configuration tables and native fallback policy are retained.
+  native GB300 fallback policy is retained. No device/shape tuning tables are
+  bundled: the pinned reference has no GB300 table. Other device profiles must
+  supply the reference's complete BF16 table directory through
+  `MEGATRON_PARITY_MOE_CONFIG_DIR` to preserve its table-or-fallback choice.
 - `collectives.py`, `symm_mem.py`, and `collective_sizes.py`: reference dispatch
   thresholds for custom IPC all-reduce, PyTorch symmetric memory, and a
   separate NCCL communicator, using explicit caller-owned process groups.
@@ -20,9 +23,12 @@ as `LICENSE.vllm` and `LICENSE.flash-attention`. Copyright notices are retained.
   expert summation, RMSNorm and custom all-reduce. The bindings register local
   `mcore_parity` / `mcore_parity_ar` namespaces. Internal C++ namespaces are
   renamed to avoid collisions with an independently loaded audit reference.
-- `cute/`: the pinned FlashAttention 4 Python kernel implementation with local
-  imports. The upstream module structure is retained, including forward and
-  backward helpers imported by its interface; parity inference uses forward only.
+- `cute/`: only the BF16 Blackwell SM10x forward/combine entry point and its
+  transitive local dependencies. Autograd/backward, benchmark/testing utilities,
+  unused architecture kernels, MLA and head-dimension-256 kernels are omitted.
+  Supported head dimensions are 8–128, aligned as required by the kernel. The
+  retained kernel/helper arithmetic and native split/tile/scheduler choices are
+  unchanged. Unsupported attention profiles raise an explicit error.
 
 ## Build and dependencies
 
@@ -59,8 +65,18 @@ Job 4022390 then repeated all seven integrated scenarios: all 92 full-logit
 events, 2,116 Mamba and 552 KV state comparisons, returned tokens/logprobs and
 184 observer controls pass byte-for-byte under matched autotuning choices.
 
+The reduced package contains 52 files (previously 217). The 23 CuTe files
+are exactly the transitive local import closure of the forward entry point,
+including its optional PTXAS hook; the 18 C++/CUDA files are required translation
+units and headers. Shared helpers remain intact to preserve upstream arithmetic.
+After pruning, job 4023291 repeated all primitive/reference comparisons above
+and passed all four graph-replay test families on each of four ranks with vLLM
+imports blocked. The seven full-model scenarios were run before this pruning.
+The same job built a wheel with exactly the 52 retained package files, checked
+their bytes against the frozen source, and verified no vLLM dependency.
+
 `tests/unit_tests/determinism/kernels/test_local_parity_kernels.py` provides
 portable eager/graph replay checks with changing inputs and blocked vLLM imports.
 It requires the audited CUDA/NVLink profile and pytest; run it directly with
-four-rank torchrun to preserve production NCCL settings. Backward and alternate
-dtypes/hardware in the retained upstream helpers are outside this mode's scope.
+four-rank torchrun to preserve production NCCL settings. This is an inference
+package; it does not expose the upstream training/autograd API.

@@ -3,7 +3,7 @@
 
 This branch predates the repository-wide kernel manifest. Keep these entries
 when merging into that registry. Tests cover the BF16 forward profile on GB300;
-vendored backward/other-hardware implementations are not supported by this mode.
+backward and unused architecture implementations are excluded from this package.
 """
 
 from dataclasses import dataclass
@@ -73,35 +73,17 @@ KERNELS = (
         name='parity_fa4',
         sources=(
             'megatron/core/inference/parity_kernels/cute/__init__.py',
-            'megatron/core/inference/parity_kernels/cute/ampere_helpers.py',
-            'megatron/core/inference/parity_kernels/cute/barrier.py',
-            'megatron/core/inference/parity_kernels/cute/bench_utils.py',
-            'megatron/core/inference/parity_kernels/cute/benchmark.py',
-            'megatron/core/inference/parity_kernels/cute/benchmark_flash_attention_fp8.py',
             'megatron/core/inference/parity_kernels/cute/blackwell_helpers.py',
             'megatron/core/inference/parity_kernels/cute/block_info.py',
             'megatron/core/inference/parity_kernels/cute/block_sparse_utils.py',
             'megatron/core/inference/parity_kernels/cute/block_sparsity.py',
             'megatron/core/inference/parity_kernels/cute/cache_utils.py',
-            'megatron/core/inference/parity_kernels/cute/compute_block_sparsity.py',
-            'megatron/core/inference/parity_kernels/cute/copy_utils.py',
             'megatron/core/inference/parity_kernels/cute/cute_dsl_ptxas.py',
             'megatron/core/inference/parity_kernels/cute/cute_dsl_utils.py',
             'megatron/core/inference/parity_kernels/cute/fa_logging.py',
             'megatron/core/inference/parity_kernels/cute/fast_math.py',
-            'megatron/core/inference/parity_kernels/cute/flash_bwd.py',
-            'megatron/core/inference/parity_kernels/cute/flash_bwd_postprocess.py',
-            'megatron/core/inference/parity_kernels/cute/flash_bwd_preprocess.py',
-            'megatron/core/inference/parity_kernels/cute/flash_bwd_sm100.py',
-            'megatron/core/inference/parity_kernels/cute/flash_bwd_sm120.py',
-            'megatron/core/inference/parity_kernels/cute/flash_bwd_sm90.py',
-            'megatron/core/inference/parity_kernels/cute/flash_fwd.py',
             'megatron/core/inference/parity_kernels/cute/flash_fwd_combine.py',
-            'megatron/core/inference/parity_kernels/cute/flash_fwd_mla_sm100.py',
             'megatron/core/inference/parity_kernels/cute/flash_fwd_sm100.py',
-            'megatron/core/inference/parity_kernels/cute/flash_fwd_sm120.py',
-            'megatron/core/inference/parity_kernels/cute/flash_fwd_sm90.py',
-            'megatron/core/inference/parity_kernels/cute/hopper_helpers.py',
             'megatron/core/inference/parity_kernels/cute/interface.py',
             'megatron/core/inference/parity_kernels/cute/mask.py',
             'megatron/core/inference/parity_kernels/cute/mma_sm100_desc.py',
@@ -110,19 +92,12 @@ KERNELS = (
             'megatron/core/inference/parity_kernels/cute/paged_kv.py',
             'megatron/core/inference/parity_kernels/cute/pipeline.py',
             'megatron/core/inference/parity_kernels/cute/seqlen_info.py',
-            'megatron/core/inference/parity_kernels/cute/sm100_hd256_2cta_fmha_backward.py',
-            'megatron/core/inference/parity_kernels/cute/sm100_hd256_2cta_fmha_backward_dkdvkernel.py',
-            'megatron/core/inference/parity_kernels/cute/sm100_hd256_2cta_fmha_backward_dqkernel.py',
-            'megatron/core/inference/parity_kernels/cute/sm100_hd256_2cta_fmha_forward.py',
-            'megatron/core/inference/parity_kernels/cute/sm90_config_search.py',
             'megatron/core/inference/parity_kernels/cute/softmax.py',
-            'megatron/core/inference/parity_kernels/cute/testing.py',
             'megatron/core/inference/parity_kernels/cute/tile_scheduler.py',
-            'megatron/core/inference/parity_kernels/cute/topk_gather_kv.py',
             'megatron/core/inference/parity_kernels/cute/utils.py',
         ),
         tests=("tests/unit_tests/determinism/kernels/test_local_parity_kernels.py",),
         kind='external-lib',
-        notes='Forward BF16 paged-KV attention only; replay varies sequence length across page boundaries up to 196480. Backward and other dtypes/hardware helpers are retained for upstream interface compatibility and are outside this profile.',
+        notes='BF16 Blackwell SM10x forward/combine and their import dependencies; replay varies sequence length across page boundaries up to 196480. Backward, MLA and unused architectures are excluded.',
     ),
 )

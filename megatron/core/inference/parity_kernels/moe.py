@@ -19,19 +19,24 @@ from .ops import load_ops
 
 @functools.lru_cache
 def get_configs(experts, width):
-    """Use the reference's device-keyed table lookup and nearest-batch policy."""
+    """Use the GB300 fallback or an explicitly supplied reference table directory."""
     device = torch.cuda.get_device_name().replace(' ', '_')
     if 'H200' in device.split('_'):
         device = 'NVIDIA_H200'
     filename = f'E={experts},N={width},device_name={device}.json'
-    roots = [Path(__file__).parent / 'configs']
-    if os.environ.get('MEGATRON_PARITY_MOE_CONFIG_DIR'):
-        roots.insert(0, Path(os.environ['MEGATRON_PARITY_MOE_CONFIG_DIR']))
-    for root in roots:
-        if (root / filename).is_file():
-            values = json.loads((root / filename).read_text())
+    config_dir = os.environ.get('MEGATRON_PARITY_MOE_CONFIG_DIR')
+    if config_dir:
+        path = Path(config_dir) / filename
+        if path.is_file():
+            values = json.loads(path.read_text())
             values.pop('triton_version', None)
             return {int(k): v for k, v in values.items()}
+    elif device != 'NVIDIA_GB300':
+        raise ValueError(
+            'The bundled MoE policy covers GB300, which has no reference tuning table. '
+            'For another device, set MEGATRON_PARITY_MOE_CONFIG_DIR to the pinned '
+            "reference's complete BF16 configuration directory."
+        )
     return None
 
 

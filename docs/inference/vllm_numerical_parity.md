@@ -20,6 +20,12 @@ profile. No new Megatron model config is required.
 The CUDA extension compiles locally before graph capture. It needs a CUDA
 toolkit with nvcc, a C++20 compiler, Ninja, and PyTorch 2.11+. The validated
 runtime remains PyTorch 2.11.0+cu130, Triton 3.6.0, CUDA 13, and GB300.
+The bundled attention implementation contains only BF16 Blackwell SM10x
+forward/combine kernels and their dependencies, for head dimensions up to 128.
+Backward, benchmark utilities and unused architecture/MLA kernels are excluded.
+The bundled MoE policy uses the reference's GB300 fallback; no GB300 tuning
+table exists in the pinned reference. Other GPU profiles must explicitly provide
+its complete BF16 table directory through `MEGATRON_PARITY_MOE_CONFIG_DIR`.
 No source downloads occur at inference runtime. Provision the independent
 dependencies inside the policy-worker container before starting Ray:
 
