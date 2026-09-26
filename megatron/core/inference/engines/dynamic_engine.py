@@ -1553,7 +1553,8 @@ class DynamicInferenceEngine(AbstractEngine):
                     if is_chunked_prefill:
                         pass
                     elif is_prefill:
-                        request.generated_log_probs.append(request_log_probs[-1])
+                        if request.generated_tokens and len(request_log_probs) > 0:
+                            request.generated_log_probs.append(request_log_probs[-1])
                     else:
                         request.generated_log_probs.extend(request_log_probs)
                 else:
