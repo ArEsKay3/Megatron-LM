@@ -57,12 +57,20 @@ Validation of this port is separate from the original audit:
   the scope of the original native-policy validation remain explicit.
 - Portable regression checks are in
   `tests/unit_tests/determinism/kernels/test_local_parity_kernels.py` and block
-  vLLM imports throughout changing-input eager/graph replay. Run on four GPUs:
+  vLLM imports throughout changing-input eager/graph replay. Install pytest in
+  the inference worker environment, then run on four GPUs:
 
   ```bash
   torchrun --standalone --nproc-per-node=4 \
     tests/unit_tests/determinism/kernels/test_local_parity_kernels.py
   ```
+
+- Native live stress job 4022383 completed 1,636 requests across 64 recorded
+  conversations with no request errors or logged CUDA faults, without an
+  importable vLLM package. It generated 370,177 tokens with contexts up to
+  196,480 tokens. Manual review covered 41 outputs from all 32 tasks and found
+  both coherent continuations and some incorrect/repetitive debugging. See
+  [the full stress report](vllm_parity_stress_test.md) for evidence and limits.
 
 The reference profile is native autotuning, BF16, full attention, ReLU-squared
 experts, and one NVLink node with EP1/ETP=TP. Alternative reference environment
