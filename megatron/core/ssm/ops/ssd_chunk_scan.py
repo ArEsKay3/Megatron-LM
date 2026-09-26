@@ -7,6 +7,8 @@ import triton
 import triton.language as tl
 from packaging import version
 
+from megatron.core.ssm.ops.triton_helpers import fast_exp
+
 TRITON_22 = version.parse(triton.__version__) >= version.parse("2.2.0")
 
 
@@ -237,7 +239,7 @@ def _chunk_scan_fwd_kernel(
     offs_k_dstate = tl.arange(0, BLOCK_SIZE_DSTATE if BLOCK_SIZE_DSTATE <= 128 else BLOCK_SIZE_K)
     C_ptrs = C_ptr + (offs_m[:, None] * stride_C_seqlen + offs_k_dstate[None, :] * stride_C_dstate)
 
-    scale_m = tl.exp(dA_cs_m)
+    scale_m = fast_exp(dA_cs_m)
     if BLOCK_SIZE_DSTATE <= 128:
         C = tl.load(
             C_ptrs,
@@ -305,7 +307,7 @@ def _chunk_scan_fwd_kernel(
         dA_cs_k = tl.load(dA_cumsum_ptrs, mask=offs_k < chunk_size - k, other=0.0).to(tl.float32)
         # If there's seq_idx, we already set cb[i, j] = 0 for seq_idx[i] != seq_idx[j].
         # So we don't need masking wrt seq_idx here.
-        cb *= tl.exp(tl.minimum(dA_cs_m[:, None] - dA_cs_k[None, :], 0.0))
+        cb *= fast_exp(tl.minimum(dA_cs_m[:, None] - dA_cs_k[None, :], 0.0))
         dt_k = tl.load(dt_ptrs, mask=offs_k < chunk_size - k, other=0.0).to(tl.float32)
         cb *= dt_k
         if IS_CAUSAL:

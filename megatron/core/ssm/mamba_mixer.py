@@ -30,7 +30,10 @@ from megatron.core.ssm.ops.intermediate_extraction import (
     scatter_intermediate_ssm,
 )
 from megatron.core.ssm.ops.mamba_ssm import selective_state_update
-from megatron.core.ssm.ops.vllm_grouped_rmsnorm import compiled_grouped_gated_rmsnorm
+from megatron.core.ssm.ops.vllm_grouped_rmsnorm import (
+    compiled_grouped_gated_rmsnorm,
+    grouped_gated_rmsnorm,
+)
 from megatron.core.ssm.ssm_inference import SSMDynamicInferenceMixin
 from megatron.core.ssm.utils import _split_tensor_factory
 from megatron.core.tensor_parallel import get_cuda_rng_tracker
@@ -124,9 +127,12 @@ class ExtendedRMSNorm(RMSNormGated):
             and self.group_size is not None
         ):
             shape = x.shape
-            return compiled_grouped_gated_rmsnorm(
-                self, x.reshape(-1, shape[-1]), z.reshape(-1, shape[-1])
-            ).view(shape)
+            norm = (
+                compiled_grouped_gated_rmsnorm
+                if getattr(self, 'inference_vllm_compile_norm', True)
+                else grouped_gated_rmsnorm
+            )
+            return norm(self, x.reshape(-1, shape[-1]), z.reshape(-1, shape[-1])).view(shape)
         return super().forward(x, z)
 
     def sharded_state_dict(self, prefix="", sharded_offsets=(), metadata=None):
@@ -743,6 +749,55 @@ class MambaMixer(SSMDynamicInferenceMixin, MegatronModule):
 
         return y
 
+    @torch.no_grad()
+    def warmup_vllm_ssd(self, state_dtype: torch.dtype) -> None:
+        """Warm native SSD tuning before cache allocation, as vLLM does.
+
+        Use the reference's one-chunk contiguous profile and both initial-state
+        variants. Tensor dtypes participate in Triton's autotune cache key.
+        Candidate lists, benchmark selection, and caches are left native.
+        """
+        if getattr(self, "_vllm_ssd_warmed_dtype", None) == state_dtype:
+            return
+        device, dtype = self.dt_bias.device, self.dt_bias.dtype
+        nheads, ngroups = self.nheads_local_tp, self.ngroups_local_tp
+        length = self.chunk_size
+        x = torch.randn(length, nheads, self.headdim, device=device, dtype=dtype)
+        dt = torch.randn(length, nheads, device=device, dtype=dtype)
+        B = torch.randn(length, ngroups, self.d_state, device=device, dtype=dtype)
+        C = torch.randn(length, ngroups, self.d_state, device=device, dtype=dtype)
+        chunks = torch.tensor([0, length], device=device, dtype=torch.int32)
+        last = torch.tensor([0], device=device, dtype=torch.int32)
+        seq_idx = torch.zeros(1, device=device, dtype=torch.int32)
+        out = torch.empty_like(x)
+        for use_initial_states in (False, True):
+            initial_states = (
+                torch.randn(1, nheads, self.headdim, self.d_state, device=device, dtype=state_dtype)
+                if use_initial_states
+                else None
+            )
+            mamba_chunk_scan_combined_varlen(
+                x=x,
+                dt=dt,
+                A=-torch.exp(self.A_log.float()),
+                B=B,
+                C=C,
+                chunk_size=length,
+                cu_chunk_seqlens=chunks,
+                last_chunk_indices=last,
+                seq_idx=seq_idx,
+                out=out,
+                D=self.D,
+                z=None,
+                dt_bias=self.dt_bias,
+                initial_states=initial_states,
+                dt_softplus=True,
+                dt_limit=(0.0, float("inf")),
+                state_dtype=state_dtype,
+            )
+        self._vllm_ssd_warmed_dtype = state_dtype
+        torch.cuda.empty_cache()
+
     def ssm_prefill(
         self,
         zxBCdt: torch.Tensor,
@@ -877,11 +932,14 @@ class MambaMixer(SSMDynamicInferenceMixin, MegatronModule):
         )
 
         # TODO Vijay: fuse most of the transposes with the GEMMS
-        x = rearrange(x, "b l (h p) -> b l h p", p=self.headdim).contiguous()
-        dt = dt.contiguous()
-        B = rearrange(B, "b l (g n) -> b l g n", n=self.d_state).contiguous()
-        C = rearrange(C, "b l (g n) -> b l g n", n=self.d_state).contiguous()
-        z = rearrange(z, "b l (h p) -> b l h p", p=self.headdim).contiguous()
+        x = rearrange(x, "b l (h p) -> b l h p", p=self.headdim)
+        B = rearrange(B, "b l (g n) -> b l g n", n=self.d_state)
+        C = rearrange(C, "b l (g n) -> b l g n", n=self.d_state)
+        if not self.config.inference_vllm_parity:
+            x, dt, B, C = (tensor.contiguous() for tensor in (x, dt, B, C))
+        z = rearrange(z, "b l (h p) -> b l h p", p=self.headdim)
+        if not self.config.inference_vllm_parity:
+            z = z.contiguous()
 
         # If `rmsnorm == False`, then the norm inside `mamba_chunk_scan_combined` will be used.
         # In this case, if `cp_size > 1` then that norm could be performed on less heads than if
@@ -967,7 +1025,11 @@ class MambaMixer(SSMDynamicInferenceMixin, MegatronModule):
                 else self.cp.get_D()
             ),
             z=z if (self.config.batch_invariant_mode or not self.rmsnorm) else None,
-            dt_bias=self.cp.get_dt_bias().float(),
+            dt_bias=(
+                self.cp.get_dt_bias()
+                if self.config.inference_vllm_parity
+                else self.cp.get_dt_bias().float()
+            ),
             initial_states=initial_ssm_state,
             return_raw_states=self.config.batch_invariant_mode or extract_intermediates,
             dt_softplus=True,
@@ -1031,7 +1093,11 @@ class MambaMixer(SSMDynamicInferenceMixin, MegatronModule):
         y = self.cp.post_conv_ssm(y)
 
         if self.rmsnorm:
-            z = rearrange(z, "b l h p -> l b (h p)").contiguous()
+            # Preserve the projection view's row stride through the compiled
+            # gate. A compact copy selects a different Inductor reduction.
+            z = rearrange(z, "b l h p -> l b (h p)")
+            if not self.config.inference_vllm_parity:
+                z = z.contiguous()
             z = self.cp.post_conv_ssm(z)
             y = self.norm(y, None if self.config.batch_invariant_mode else z)
 
@@ -1169,6 +1235,7 @@ class MambaMixer(SSMDynamicInferenceMixin, MegatronModule):
                 self.activation,
                 conv_state_indices=batch_indices,
                 intermediate_conv_states=intermediate_conv_state,
+                round_products_to_input_dtype=self.config.inference_vllm_parity,
             ).to(xBC_dtype)
 
         x, B, C = torch.split(

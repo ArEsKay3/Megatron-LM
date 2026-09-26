@@ -56,7 +56,7 @@ class MambaInferenceStateConfig:
         decoder = get_attr_wrapped_model(model, "decoder")
         layer_type_list = getattr(decoder, "layer_type_list", None)
         if layer_type_list is not None and Symbols.MAMBA in layer_type_list:
-            (mamba_conv_states_shape, mamba_ssm_states_shape) = (
+            mamba_conv_states_shape, mamba_ssm_states_shape = (
                 decoder.mamba_state_shapes_per_request()
             )
             if conv_states_dtype is None:
@@ -71,7 +71,20 @@ class MambaInferenceStateConfig:
                 # chunks. Rounding the cache to BF16 changes the next transition.
                 ssm_states_dtype = torch.float32
             elif ssm_states_dtype is None:
-                ssm_states_dtype = model.config.params_dtype
+                ssm_states_dtype = (
+                    torch.float32
+                    if model.config.inference_vllm_parity
+                    else model.config.params_dtype
+                )
+            if model.config.inference_vllm_parity:
+                from megatron.core.inference.vllm_parity import configure_ssd_autotune_cache
+
+                # SSD warms before the adapter's first forward/graph capture.
+                # Apply the reference policy before its first tuning decision.
+                configure_ssd_autotune_cache()
+                for layer_type, layer in zip(decoder.layer_type_list, decoder.layers):
+                    if layer_type == Symbols.MAMBA:
+                        layer.mixer.warmup_vllm_ssd(ssm_states_dtype)
             mamba_chunk_size = 128
             for layer_type, layer in zip(decoder.layer_type_list, decoder.layers):
                 if layer_type == Symbols.MAMBA and hasattr(layer, 'mixer'):
@@ -287,9 +300,7 @@ class InferenceConfig:
     The number of mixed prefill graphs to capture if mixed prefill/decode graphs are enabled.
     """
 
-    cuda_graph_sizing_distribution: CudaGraphSizingDistribution = (
-        CudaGraphSizingDistribution.HYBRID
-    )
+    cuda_graph_sizing_distribution: CudaGraphSizingDistribution = CudaGraphSizingDistribution.HYBRID
     """
     How CUDA graph token counts are spaced. HYBRID (default) applies EXPONENTIAL to prefill and
     mixed graphs and LINEAR to decode-only graphs, since the two cover ranges that differ by

@@ -1,6 +1,7 @@
 # Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 import logging
+from contextlib import nullcontext
 from typing import Literal, Optional
 
 import torch
@@ -419,6 +420,13 @@ class HybridModel(LanguageModule, GraphableMegatronModule):
             from megatron.core.transformer.cuda_graphs import CudaGraphManager
 
             self.cudagraph_manager = CudaGraphManager(config)
+
+    def cuda_graph_capture_context(self):
+        """Allow inference collectives to register the captured graph's buffers."""
+        parity = getattr(self.decoder, "_vllm_parity", None)
+        if parity is not None and InferenceMode.is_active():
+            return parity.cuda_graph_capture_context()
+        return nullcontext()
 
     def forward(
         self,

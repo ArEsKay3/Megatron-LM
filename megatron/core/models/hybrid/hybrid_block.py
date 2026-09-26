@@ -226,6 +226,9 @@ class HybridStack(MegatronModule):
                 eps=self.config.layernorm_epsilon,
             )
 
+        if self.config.inference_vllm_parity:
+            self._vllm_parity = None
+
     def _fuse_mla_down_proj(self, submodules: HybridStackSubmodules) -> HybridStackSubmodules:
         # Avoid modifying the original object so users don't get surprised about their `submodules`
         # being modified underneath them.
@@ -304,6 +307,13 @@ class HybridStack(MegatronModule):
         # Delete the obsolete reference to the initial input tensor if necessary
         if isinstance(hidden_states, WrappedTensor):
             hidden_states = hidden_states.unwrap()
+
+        if self.config.inference_vllm_parity and InferenceMode.is_active():
+            if self._vllm_parity is None:
+                from megatron.core.inference.vllm_parity import VllmHybridParity
+
+                self._vllm_parity = VllmHybridParity(self)
+            return self._vllm_parity.forward(self, hidden_states, inference_context)
 
         if inference_context and inference_context.is_static_batching():
             # NOTE(bnorick): match BaseInferenceContext attributes for

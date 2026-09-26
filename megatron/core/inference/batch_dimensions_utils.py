@@ -25,6 +25,7 @@ class InferenceBatchDimensions:
         token_count : number of total input tokens
         prefill_req_count : number of prefill requests
         decode_req_count : number of decode requests
+        attention_req_count : optional decode attention capacity; zero uses all request slots
 
     The batch dimensions are ordered by token_count, then by prefill_req_count,
     then by decode_req_count.
@@ -34,12 +35,18 @@ class InferenceBatchDimensions:
     token_count: int = 0
     prefill_req_count: int = 0
     decode_req_count: int = 0
+    attention_req_count: int = 0
 
     def __str__(self):
         """
         Returns a string representation of the batch dimensions.
         """
-        return f"[{self.token_count}]: {self.prefill_req_count} P + {self.decode_req_count} D"
+        description = (
+            f"[{self.token_count}]: {self.prefill_req_count} P + {self.decode_req_count} D"
+        )
+        if self.attention_req_count:
+            description += f" | attention requests={self.attention_req_count}"
+        return description
 
     def is_applicable_for_batch_dim(
         self, real_batch_dim: "InferenceBatchDimensions", strict: bool = False
@@ -57,6 +64,7 @@ class InferenceBatchDimensions:
             return (
                 self.token_count >= real_batch_dim.token_count
                 and self.decode_req_count >= real_batch_dim.decode_req_count
+                and (self.attention_req_count or self.req_count) >= real_batch_dim.req_count
                 and self.prefill_req_count == 0  # keep decode only property
             )
         if strict:
@@ -89,6 +97,11 @@ class InferenceBatchDimensions:
         if self.token_count <= 0:
             return False
 
+        if self.attention_req_count < 0 or self.attention_req_count > self.decode_req_count:
+            return False
+        if self.attention_req_count and (self.prefill_req_count or num_speculative_tokens):
+            return False
+
         # Check if total requests exceed maximum
         if self.prefill_req_count + self.decode_req_count > max_requests:
             return False
@@ -118,7 +131,14 @@ class InferenceBatchDimensions:
         Returns a hash of the batch dimension.
         In cuda graph quick matching, the batch dimension is used as a key in a dictionary.
         """
-        return hash((self.token_count, self.prefill_req_count, self.decode_req_count))
+        return hash(
+            (
+                self.token_count,
+                self.prefill_req_count,
+                self.decode_req_count,
+                self.attention_req_count,
+            )
+        )
 
     def __eq__(self, other: "InferenceBatchDimensions") -> bool:
         """
@@ -126,10 +146,16 @@ class InferenceBatchDimensions:
         """
         if other is None:
             return False
-        return (self.token_count, self.prefill_req_count, self.decode_req_count) == (
+        return (
+            self.token_count,
+            self.prefill_req_count,
+            self.decode_req_count,
+            self.attention_req_count,
+        ) == (
             other.token_count,
             other.prefill_req_count,
             other.decode_req_count,
+            other.attention_req_count,
         )
 
     @property
@@ -175,7 +201,7 @@ class InferenceBatchDimensions:
         if ep_zmq_communicator is not None:
             # CPU-only sync via ZMQ: avoids a NCCL AllReduce kernel on the
             # compute stream plus the H2D/D2H pair that sandwiches it.
-            (max_token_count, max_is_non_decode) = ep_zmq_communicator.sync_all_reduce_max(
+            max_token_count, max_is_non_decode = ep_zmq_communicator.sync_all_reduce_max(
                 local_batch_dims.token_count, int(is_non_decode)
             )
         else:
@@ -699,6 +725,14 @@ class CUDAGraphBatchDimensionBuilder:
         if len(graph_batch_dims_applicable) == 0:
             return None
         # then find the best batch dimension
-        best_batch_dim = min(graph_batch_dims_applicable)
+        best_batch_dim = min(
+            graph_batch_dims_applicable,
+            key=lambda dim: (
+                dim.token_count,
+                dim.prefill_req_count,
+                dim.decode_req_count,
+                dim.attention_req_count or dim.req_count,
+            ),
+        )
 
         return best_batch_dim

@@ -25,4 +25,17 @@ def grouped_gated_rmsnorm(module, x: torch.Tensor, gate: torch.Tensor) -> torch.
     return module.weight * x.to(input_dtype)
 
 
-compiled_grouped_gated_rmsnorm = torch.compile(grouped_gated_rmsnorm, fullgraph=True, dynamic=True)
+_compiled_grouped_gated_rmsnorm = torch.compile(
+    grouped_gated_rmsnorm,
+    fullgraph=True,
+    dynamic=False,
+    # Match the reference despite nemoRL's policy-worker global override.
+    options={"autotune_local_cache": True},
+)
+
+
+def compiled_grouped_gated_rmsnorm(module, x: torch.Tensor, gate: torch.Tensor) -> torch.Tensor:
+    """Specialize group width and epsilon as in the reference compilation."""
+    torch._dynamo.mark_dynamic(x, 0)
+    torch._dynamo.mark_dynamic(gate, 0)
+    return _compiled_grouped_gated_rmsnorm(module, x, gate)

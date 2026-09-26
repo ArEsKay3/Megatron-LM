@@ -180,6 +180,41 @@ class TestDynamicContext:
         assert torch.all(dynamic_context.request_ids == -1)
 
     @pytest.mark.internal
+    @pytest.mark.parametrize("is_hybrid_model", [False, True])
+    @pytest.mark.parametrize("token_budget, padded_count", [(65, 128), (8480, 8512)])
+    def test_unaligned_token_budget_has_padding_capacity(
+        self, is_hybrid_model, token_budget, padded_count
+    ):
+        """A full scheduled batch must fit after forward-token rounding."""
+        context = self._get_dynamic_context(
+            params_dtype=torch.float32,
+            num_layers=4,
+            kv_channels=8,
+            num_attention_heads=2,
+            max_sequence_length=16384,
+            buffer_size_gb=0.03,
+            block_size_tokens=128,
+            max_tokens=token_budget,
+            max_requests=4,
+            is_hybrid_model=is_hybrid_model,
+            num_cuda_graphs=0,
+        )
+        assert context.max_tokens == token_budget
+        assert context.token_to_input_ids.numel() == padded_count
+        assert context.gpu_view.token_to_input_ids.numel() == padded_count
+        # Stage the whole padded forward, including its final token, then
+        # transfer the coalesced buffer. Both layouts must include the tail.
+        context._cpu_bookkeeping_buf.zero_()
+        expected = torch.arange(padded_count, dtype=torch.int64)
+        context.token_to_input_ids.copy_(expected)
+        context.gpu_view._buf.copy_(context._cpu_bookkeeping_buf)
+        torch.testing.assert_close(context.gpu_view.token_to_input_ids.cpu(), expected)
+        if is_hybrid_model:
+            assert context._cpu_mamba_seq_idx.numel() == padded_count
+            assert context._cpu_mamba_conv_seq_idx.numel() == padded_count
+            assert context._cpu_mamba_conv_seq_start.numel() == padded_count
+
+    @pytest.mark.internal
     def test_is_static_batching(self):
 
         dynamic_context = self._get_dynamic_context(
@@ -3330,7 +3365,7 @@ class TestDynamicContext:
         prefix_skip = 2 * bs - 1
         eff_chunk = chunk_length - prefix_skip
 
-        (_, _, _, _, prefix_skip, eff_chunk) = ctx._compute_prefix_match(req2, chunk_length)
+        _, _, _, _, prefix_skip, eff_chunk = ctx._compute_prefix_match(req2, chunk_length)
         expected_active = tokens_before_chunk_2 + eff_chunk
         assert ctx.active_token_count == expected_active
 
