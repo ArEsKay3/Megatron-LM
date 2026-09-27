@@ -1019,7 +1019,22 @@ try:
                                     "Prefix stitching requires compact_prompt_token_ids "
                                     "from the previous Megatron-Inference response."
                                 )
-                            previous_prompt_token_ids = last_assistant_message["prompt_token_ids"]
+                            # Text-only history never diverges: only VLM requests populate
+                            # compact_prompt_tokens (see DynamicVLMInferenceRequest in
+                            # dynamic_engine.py); everywhere else this server's own
+                            # response already falls back to prompt_tokens when it sets
+                            # compact_prompt_token_ids, so an agent harness that drops the
+                            # field in transit is recoverable losslessly from
+                            # prompt_token_ids as long as no media sits in this prefix.
+                            previous_prompt_token_ids = last_assistant_message.get(
+                                "prompt_token_ids"
+                            )
+                            if not isinstance(previous_prompt_token_ids, list):
+                                raise ValueError(
+                                    "Prefix stitching requires compact_prompt_token_ids or "
+                                    "prompt_token_ids from the previous Megatron-Inference "
+                                    "response."
+                                )
                     eos_token_ids = _model_eos_token_ids(tokenizer)
                     assert eos_token_ids, "Your tokenizer must have an EOS token ID!"
                     # _replace_prefix_tokens_metadata's engine-side stager path only
