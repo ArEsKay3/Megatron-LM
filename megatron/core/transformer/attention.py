@@ -1864,7 +1864,7 @@ class SelfAttention(Attention):
         If `output_gate` is True, then also derives `gate` tensor.
         If `split_qkv=False`, then the unsplit mixed_qkv tensor is returned.
         """
-        if self.config.inference_vllm_parity and not self.training:
+        if self.config.inference_vllm_parity and InferenceMode.is_active():
             from megatron.core.inference.vllm_parity import attention_qkv
 
             if output_gate or not split_qkv:
