@@ -123,7 +123,8 @@ class ExtendedRMSNorm(RMSNormGated):
     def forward(self, x: torch.Tensor, z: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Use the reference's compiled grouped gate/norm path during inference."""
         if (
-            not self.training
+            hasattr(self, 'inference_vllm_compile_norm')
+            and not self.training
             and z is not None
             and not self.norm_before_gate
             and self.group_size is not None
@@ -131,7 +132,7 @@ class ExtendedRMSNorm(RMSNormGated):
             shape = x.shape
             norm = (
                 compiled_grouped_gated_rmsnorm
-                if getattr(self, 'inference_vllm_compile_norm', True)
+                if self.inference_vllm_compile_norm
                 else grouped_gated_rmsnorm
             )
             return norm(self, x.reshape(-1, shape[-1]), z.reshape(-1, shape[-1])).view(shape)
