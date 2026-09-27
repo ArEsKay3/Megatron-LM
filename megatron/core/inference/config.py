@@ -372,6 +372,11 @@ class InferenceConfig:
     enable_prefix_caching: bool = False
     """Whether to enable prefix caching for KV cache block sharing."""
 
+    invalidate_prefix_cache_on_weight_update: bool = True
+    """Whether resume() re-salts prefix-cache block hashes so blocks computed by earlier
+    weights are never reused. When False the salt stays fixed and cached blocks survive
+    weight updates."""
+
     prefix_caching_eviction_policy: PrefixCachingEvictionPolicy = (
         PrefixCachingEvictionPolicy.REF_ZERO
     )
