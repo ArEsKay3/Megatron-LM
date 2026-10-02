@@ -7,6 +7,8 @@ these lifecycle and HTTP rejection contracts can also run with --noconftest.
 
 import ast
 import asyncio
+import dataclasses
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -108,3 +110,39 @@ def test_invalid_formatter_request_rejected_before_inference():
     assert status == 400
     assert 'stream=false' in text
     client.add_request.assert_not_called()
+
+
+def test_cuda_graph_accepts_derived_inference_contexts(monkeypatch):
+    class DynamicContext:
+        pass
+
+    class StaticContext:
+        pass
+
+    class DerivedContext(DynamicContext):
+        pass
+
+    monkeypatch.setitem(
+        sys.modules,
+        'megatron.core.inference.contexts.dynamic_context',
+        SimpleNamespace(DynamicInferenceContext=DynamicContext),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        'megatron.core.inference.contexts.static_context',
+        SimpleNamespace(StaticInferenceContext=StaticContext),
+    )
+    check = load_function(
+        ROOT / 'megatron/core/transformer/cuda_graphs.py',
+        '_check_supported_type',
+        {
+            'ArgMetadata': SimpleNamespace,
+            'torch': SimpleNamespace(Tensor=type('Tensor', (), {})),
+            'dataclass': dataclasses.dataclass,
+            'is_dataclass': dataclasses.is_dataclass,
+        },
+    )
+    check(SimpleNamespace(type=DerivedContext, value=DerivedContext()))
+    check(SimpleNamespace(type=StaticContext, value=StaticContext()))
+    with pytest.raises(AssertionError, match='not supported'):
+        check(SimpleNamespace(type=object, value=object()))
