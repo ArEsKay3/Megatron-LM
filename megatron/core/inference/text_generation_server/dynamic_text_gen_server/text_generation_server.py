@@ -21,6 +21,9 @@ except ImportError as e:
 import megatron.core.inference.text_generation_server.dynamic_text_gen_server.endpoints as endpoints
 from megatron.core.inference.config import PrefixCachingCoordinatorPolicy
 from megatron.core.inference.inference_client import InferenceClient
+from megatron.core.inference.text_generation_server.dynamic_text_gen_server.response_formatter import (
+    ChatResponseFormatter,
+)
 from megatron.core.utils import trace_async_exceptions
 
 logger = logging.getLogger(__name__)
@@ -53,6 +56,7 @@ async def _run_text_gen_server(
     hostname: Optional[str] = None,
     block_size_tokens: Optional[int] = None,
     prefix_caching_coordinator_policy: Optional[PrefixCachingCoordinatorPolicy] = None,
+    response_formatter: ChatResponseFormatter | None = None,
 ):
     """
     Initializes and runs the async web server. Automatically starts and
@@ -87,6 +91,7 @@ async def _run_text_gen_server(
         app.config['client'] = inference_client
         app.config['tokenizer'] = tokenizer
         app.config['parsers'] = parsers
+        app.config['response_formatter'] = response_formatter
         app.config['verbose'] = verbose
         # The frontend hashes the prompt it already holds so the coordinator does
         # not have to on its single serial loop. The policy decides whether anyone
@@ -145,6 +150,7 @@ def _server_process_worker(
     hostname: Optional[str] = None,
     block_size_tokens: Optional[int] = None,
     prefix_caching_coordinator_policy: Optional[PrefixCachingCoordinatorPolicy] = None,
+    response_formatter: ChatResponseFormatter | None = None,
 ):
     """Synchronous worker function that sets up a new event loop for the separate process."""
     loop = asyncio.new_event_loop()
@@ -161,6 +167,7 @@ def _server_process_worker(
                 hostname,
                 block_size_tokens,
                 prefix_caching_coordinator_policy,
+                response_formatter,
             )
         )
     except KeyboardInterrupt:
@@ -218,6 +225,7 @@ def start_text_gen_server(
     sock: Optional[socket.socket] = None,
     block_size_tokens: Optional[int] = None,
     prefix_caching_coordinator_policy: Optional[PrefixCachingCoordinatorPolicy] = None,
+    response_formatter: ChatResponseFormatter | None = None,
 ) -> Optional[str]:
     """Start the text generation server.
 
@@ -239,12 +247,18 @@ def start_text_gen_server(
         sock: A socket the caller already bound, used only to fix the port.
             Replicas bind that port themselves, so it is closed here rather than
             shared with them.
+        response_formatter: Optional picklable Chat Completions validator and
+            response formatter, copied into every frontend process. Requires
+            empty parsers; inference and detokenization remain in Megatron.
 
     Returns:
         The base URL this rank serves on, or None if the server was already
         running.
     """
     global _SERVER_PROCESSES
+
+    if response_formatter is not None and parsers:
+        raise ValueError("response_formatter owns response parsing; parsers must be empty")
 
     if _SERVER_PROCESSES:
         logger.warning("Text gen server processes are already running.")
@@ -275,6 +289,7 @@ def start_text_gen_server(
                 hostname,
                 block_size_tokens,
                 prefix_caching_coordinator_policy,
+                response_formatter,
             ),
             daemon=True,
         )

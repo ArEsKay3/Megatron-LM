@@ -11,11 +11,11 @@ from functools import partial
 
 import torch
 
+from megatron.core.inference.config import routes_on_prefix
 from megatron.core.inference.inference_request import (
     compute_block_hashes_batched,
     unwrap_serialized_tensors,
 )
-from megatron.core.inference.config import routes_on_prefix
 from megatron.core.inference.sampling_params import SamplingParams
 from megatron.core.inference.text_generation_controllers.text_generation_controller import (
     TextGenerationController,
@@ -467,6 +467,12 @@ try:
         coordinator_policy = current_app.config.get('prefix_caching_coordinator_policy')
 
         req = await request.get_json()
+        response_formatter = current_app.config.get('response_formatter')
+        if response_formatter is not None:
+            try:
+                response_formatter.validate_request(req)
+            except ValueError as error:
+                return Response(f"Invalid request: {error}", status=400)
         tools = req.get("tools", None)
         tool_choice = req.get("tool_choice", None)
         parallel_tool_calls = req.get("parallel_tool_calls", True)
@@ -748,6 +754,24 @@ try:
             return Response(f"Inference request(s) failed: {error_detail}", status=status)
 
         # --- 5. Format OpenAI Response ---
+        if response_formatter is not None:
+            results = [unwrap_serialized_tensors(result) for result in batch_results]
+            response = await response_formatter.format_response(
+                req,
+                prompt_tokens,
+                results,
+                [
+                    TextGenerationController.detokenize(
+                        tokenizer, result['generated_tokens'],
+                        remove_EOD=not sampling_params.detokenize_stop_sequence,
+                    )
+                    for result in results
+                ],
+            )
+            if HAVE_ORJSON:
+                return Response(orjson.dumps(response), mimetype="application/json")
+            return jsonify(response)
+
         choices = []
         total_completion_tokens = 0
         prompt_tokens_counts = []
